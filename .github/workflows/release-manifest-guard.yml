@@ -1,0 +1,64 @@
+name: Release Manifest Guard
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published, prereleased]
+
+jobs:
+  validate-download-security-manifest:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release artifacts and compute SHA-256
+        id: collect
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path temp -Force | Out-Null
+
+          $stableUrl = 'https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64'
+          $ptbUrl = 'https://discord.com/api/download/ptb?platform=win'
+
+          Invoke-WebRequest -Uri $stableUrl -OutFile 'temp/DiscordSetup.exe'
+          Invoke-WebRequest -Uri $ptbUrl -OutFile 'temp/DiscordPTBSetup.exe'
+
+          $stableFinal = (Invoke-WebRequest -Uri $stableUrl -MaximumRedirection 10 -Method Head).BaseResponse.ResponseUri.AbsoluteUri
+          $ptbFinal = (Invoke-WebRequest -Uri $ptbUrl -MaximumRedirection 10 -Method Head).BaseResponse.ResponseUri.AbsoluteUri
+
+          $stableVersion = [regex]::Match($stableFinal, '(\d+\.\d+\.\d+)').Groups[1].Value
+          $ptbVersion = [regex]::Match($ptbFinal, '(\d+\.\d+\.\d+)').Groups[1].Value
+
+          if ([string]::IsNullOrWhiteSpace($stableVersion) -or [string]::IsNullOrWhiteSpace($ptbVersion)) {
+            throw 'Discord installer sürümleri URL üzerinden çözümlenemedi.'
+          }
+
+          $wgcfRelease = Invoke-RestMethod -Uri 'https://api.github.com/repos/ViRb3/wgcf/releases/latest' -Headers @{ 'User-Agent' = 'SplitWire-Turkey-Release-Guard' }
+          $wgcfAsset = $wgcfRelease.assets | Where-Object { $_.name -match 'windows_amd64' } | Select-Object -First 1
+          if (-not $wgcfAsset) {
+            throw 'wgcf windows_amd64 asset bulunamadı.'
+          }
+
+          Invoke-WebRequest -Uri $wgcfAsset.browser_download_url -OutFile 'temp/wgcf.exe'
+          $wgcfVersion = [regex]::Match($wgcfAsset.name, '(\d+\.\d+\.\d+)').Groups[1].Value
+          if ([string]::IsNullOrWhiteSpace($wgcfVersion)) {
+            $wgcfVersion = $wgcfRelease.tag_name.TrimStart('v','V')
+          }
+
+          "stable_version=$stableVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "ptb_version=$ptbVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "wgcf_version=$wgcfVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Enforce manifest update for release artifacts
+        shell: pwsh
+        run: |
+          ./scripts/validate-manifest.ps1 \
+            -WgcfVersion '${{ steps.collect.outputs.wgcf_version }}' \
+            -WgcfPath 'temp/wgcf.exe' \
+            -DiscordStableVersion '${{ steps.collect.outputs.stable_version }}' \
+            -DiscordStablePath 'temp/DiscordSetup.exe' \
+            -DiscordPtbVersion '${{ steps.collect.outputs.ptb_version }}' \
+            -DiscordPtbPath 'temp/DiscordPTBSetup.exe'

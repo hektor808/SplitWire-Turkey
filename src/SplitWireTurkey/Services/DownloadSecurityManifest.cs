@@ -89,6 +89,48 @@ namespace SplitWireTurkey.Services
             return Policies.TryGetValue(artifactKey, out policy);
         }
 
+        public static bool TryGetExpectedHash(
+            DownloadIntegrityPolicy policy,
+            string version,
+            out string expectedHash,
+            out string errorMessage,
+            Action<string> logSignal = null)
+        {
+            expectedHash = string.Empty;
+            errorMessage = string.Empty;
+
+            if (policy is null)
+            {
+                errorMessage = "İndirme güvenlik politikası alınamadı.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                errorMessage = $"{policy.ArtifactKey} için sürüm bilgisi alınamadı; indirme güvenlik doğrulaması durduruldu.";
+                logSignal?.Invoke($"manifest_version_missing artifact={policy.ArtifactKey}");
+                return false;
+            }
+
+            var normalizedVersion = NormalizeVersionToken(version);
+            if (string.IsNullOrWhiteSpace(normalizedVersion))
+            {
+                errorMessage = $"{policy.ArtifactKey} için sürüm formatı geçersiz: {version}";
+                logSignal?.Invoke($"manifest_version_invalid artifact={policy.ArtifactKey} version={version}");
+                return false;
+            }
+
+            if (!policy.Sha256ByVersion.TryGetValue(normalizedVersion, out expectedHash))
+            {
+                errorMessage =
+                    $"{policy.ArtifactKey} {normalizedVersion} sürümü için doğrulama bilgisi bulunamadı; güncel sürüm için uygulamayı güncelleyin.";
+                logSignal?.Invoke($"manifest_hash_missing artifact={policy.ArtifactKey} version={normalizedVersion}");
+                return false;
+            }
+
+            return true;
+        }
+
         private static void ValidateManifestNormalization()
         {
             foreach (var (artifactKey, policy) in Policies)
