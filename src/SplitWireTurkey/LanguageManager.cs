@@ -1,10 +1,40 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Text.Json;
+using SplitWireTurkey.Services.Runtime;
 
 namespace SplitWireTurkey
 {
+    public interface ILanguageResourceProvider
+    {
+        string BuildPath(string languageCode);
+        bool Exists(string path);
+        string ReadAllText(string path);
+    }
+
+    public sealed class FileLanguageResourceProvider : ILanguageResourceProvider
+    {
+        private readonly IFileSystem _fileSystem;
+
+        public FileLanguageResourceProvider(IFileSystem? fileSystem = null)
+        {
+            _fileSystem = fileSystem ?? new FileSystem();
+        }
+
+        public string BuildPath(string languageCode)
+        {
+            return _fileSystem.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "res",
+                "Languages",
+                $"{languageCode.ToLowerInvariant()}.json");
+        }
+
+        public bool Exists(string path) => _fileSystem.FileExists(path);
+
+        public string ReadAllText(string path) => _fileSystem.ReadAllText(path);
+    }
+
     /// <summary>
     /// Dil yönetimi için sınıf
     /// </summary>
@@ -12,11 +42,22 @@ namespace SplitWireTurkey
     {
         private static Dictionary<string, object> _currentTranslations = new Dictionary<string, object>();
         private static string _currentLanguage = "TR";
+        private static ILanguageResourceProvider _resourceProvider = new FileLanguageResourceProvider();
 
         /// <summary>
         /// Mevcut dil
         /// </summary>
         public static string CurrentLanguage => _currentLanguage;
+
+        public static void SetResourceProvider(ILanguageResourceProvider provider)
+        {
+            _resourceProvider = provider ?? throw new ArgumentNullException(nameof(provider));
+        }
+
+        public static void ResetResourceProvider()
+        {
+            _resourceProvider = new FileLanguageResourceProvider();
+        }
 
         /// <summary>
         /// Dil dosyasını yükler
@@ -26,26 +67,26 @@ namespace SplitWireTurkey
             try
             {
                 _currentLanguage = languageCode;
-                
-                var languagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "res", "Languages", $"{languageCode.ToLower()}.json");
-                
-                if (!File.Exists(languagePath))
+
+                var languagePath = _resourceProvider.BuildPath(languageCode);
+
+                if (!_resourceProvider.Exists(languagePath))
                 {
                     // Fallback olarak TR dilini dene
                     if (languageCode != "TR")
                     {
-                        languagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "res", "Languages", "tr.json");
+                        languagePath = _resourceProvider.BuildPath("TR");
                     }
-                    
-                    if (!File.Exists(languagePath))
+
+                    if (!_resourceProvider.Exists(languagePath))
                     {
                         return false;
                     }
                 }
 
-                var jsonContent = File.ReadAllText(languagePath);
+                var jsonContent = _resourceProvider.ReadAllText(languagePath);
                 _currentTranslations = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonContent);
-                
+
                 return _currentTranslations != null;
             }
             catch (Exception ex)
@@ -68,7 +109,7 @@ namespace SplitWireTurkey
                 }
 
                 var value = _currentTranslations[key];
-                
+
                 if (value is JsonElement element)
                 {
                     var text = element.GetString();
