@@ -32,7 +32,7 @@ jobs:
       - name: Compile installer
         shell: cmd
         working-directory: src
-        run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DBuildArtifactsDir="..\artifacts\installer" /O"..\artifacts\installer" SplitWire-Turkey-Setup.iss'
+        run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DPackageInputDir="..\artifacts\package-input" /DBuildArtifactsDir="..\artifacts\installer" /O"..\artifacts\installer" SplitWire-Turkey-Setup.iss'
 
       - name: Validate download manifest
         shell: pwsh

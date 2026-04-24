@@ -11,6 +11,10 @@
   #define BuildArtifactsDir "..\artifacts\installer"
 #endif
 
+#ifndef PackageInputDir
+  #define PackageInputDir "..\artifacts\package-input"
+#endif
+
 ; Çoklu dil desteği
 [Languages]
 Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
@@ -83,9 +87,10 @@ DirExistsWarning=no
 LicenseFile=
 InfoBeforeFile=
 InfoAfterFile=
+SourceDir={#PackageInputDir}
 OutputDir={#BuildArtifactsDir}
 OutputBaseFilename=SplitWire-Turkey-Setup-Windows-{#MyAppVersion}
-SetupIconFile=res\splitwire.ico
+SetupIconFile={#PackageInputDir}\res\splitwire.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma
 SolidCompression=yes
@@ -1022,4 +1027,3 @@ begin
 end;
 
  
-

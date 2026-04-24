@@ -89,6 +89,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if not exist "%PACKAGE_INPUT_DIR%\res" mkdir "%PACKAGE_INPUT_DIR%\res"
+
+if exist "%PROJECT_DIR%\Resources" (
+    xcopy "%PROJECT_DIR%\Resources\*" "%PACKAGE_INPUT_DIR%\res\" /E /I /Y >nul
+)
+
+if exist "Prerequisites" (
+    xcopy "Prerequisites\*" "%PACKAGE_INPUT_DIR%\Prerequisites\" /E /I /Y >nul
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\res\splitwire.ico" (
+    echo Error: installer icon missing: %PACKAGE_INPUT_DIR%\res\splitwire.ico
+    exit /b 1
+)
+
 echo.
 echo Build complete!
 echo Application artifact: %APP_ARTIFACT_DIR%
