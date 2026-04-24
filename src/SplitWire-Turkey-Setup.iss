@@ -7,6 +7,10 @@
 #define MyAppURL "https://github.com/cagritaskn/SplitWire-Turkey"
 #define MyAppExeName "SplitWire-Turkey.exe"
 
+#ifndef BuildArtifactsDir
+  #define BuildArtifactsDir "..\artifacts\installer"
+#endif
+
 ; Çoklu dil desteği
 [Languages]
 Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
@@ -79,7 +83,7 @@ DirExistsWarning=no
 LicenseFile=
 InfoBeforeFile=
 InfoAfterFile=
-OutputDir=C:\Users\cagri\Desktop
+OutputDir={#BuildArtifactsDir}
 OutputBaseFilename=SplitWire-Turkey-Setup-Windows-{#MyAppVersion}
 SetupIconFile=res\splitwire.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
