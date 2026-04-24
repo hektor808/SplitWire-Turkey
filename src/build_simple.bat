@@ -1,108 +1,143 @@
 @echo off
-echo Building SplitWire-Turkey C# WPF Application (Simple Build)...
+setlocal EnableExtensions
+
+echo Building SplitWire-Turkey C# WPF Application (CI/CD compatible)...
+
+REM ---- Configurable parameters (CLI arg > ENV var > default) ----
+set "PROJECT_DIR=SplitWireTurkey"
+set "CONFIGURATION=Release"
+set "TFM=net8.0-windows"
+set "ARTIFACTS_ROOT=..\artifacts"
+set "RES_DIR=Resources"
+set "ADD_TO_ROOT_DIR=..\AddToRoot"
+
+if not "%~1"=="" set "ARTIFACTS_ROOT=%~1"
+if not "%BUILD_ARTIFACTS_DIR%"=="" set "ARTIFACTS_ROOT=%BUILD_ARTIFACTS_DIR%"
+if not "%BUILD_CONFIGURATION%"=="" set "CONFIGURATION=%BUILD_CONFIGURATION%"
+if not "%BUILD_TFM%"=="" set "TFM=%BUILD_TFM%"
+if not "%BUILD_PROJECT_DIR%"=="" set "PROJECT_DIR=%BUILD_PROJECT_DIR%"
+
+set "APP_ARTIFACT_DIR=%ARTIFACTS_ROOT%\app"
+set "PACKAGE_INPUT_DIR=%ARTIFACTS_ROOT%\package-input"
+if not "%BUILD_PACKAGE_INPUT_DIR%"=="" set "PACKAGE_INPUT_DIR=%BUILD_PACKAGE_INPUT_DIR%"
+if not "%BUILD_APP_ARTIFACT_DIR%"=="" set "APP_ARTIFACT_DIR=%BUILD_APP_ARTIFACT_DIR%"
+
+set "OUTPUT_DIR=%PROJECT_DIR%\bin\%CONFIGURATION%\%TFM%"
 
 REM Check if .NET SDK is installed
 dotnet --version >nul 2>&1
 if errorlevel 1 (
-    echo Error: .NET SDK not found. Please install .NET 6.0 SDK or later.
-    pause
+    echo Error: .NET SDK not found. Please install .NET 8.0 SDK or later.
     exit /b 1
 )
 
 REM Clean previous builds
-if exist "SplitWireTurkey\bin" rmdir /s /q "SplitWireTurkey\bin"
-if exist "SplitWireTurkey\obj" rmdir /s /q "SplitWireTurkey\obj"
+if exist "%PROJECT_DIR%\bin" rmdir /s /q "%PROJECT_DIR%\bin"
+if exist "%PROJECT_DIR%\obj" rmdir /s /q "%PROJECT_DIR%\obj"
 
-REM Create Resources directory if it doesn't exist
-if not exist "SplitWireTurkey\Resources" mkdir "SplitWireTurkey\Resources"
-
-REM Copy resource files if they exist in the main directory
-if exist "splitwire.ico" copy "splitwire.ico" "SplitWireTurkey\Resources\"
-if exist "splitwire-logo-128.png" copy "splitwire-logo-128.png" "SplitWireTurkey\Resources\"
-if exist "splitwireturkeytext.png" copy "splitwireturkeytext.png" "SplitWireTurkey\Resources\"
-if exist "loading.gif" copy "loading.gif" "SplitWireTurkey\Resources\"
-if exist "wgcf.exe" copy "wgcf.exe" "SplitWireTurkey\Resources\"
-if exist "wiresock-vpn-client-x64-1.4.7.1.msi" copy "SplitWireTurkey\Resources\"
-
-REM Copy font files if they exist in the main directory
-if exist "Poppins-Regular.ttf" copy "Poppins-Regular.ttf" "SplitWireTurkey\Resources\"
-if exist "Poppins-Bold.ttf" copy "Poppins-Bold.ttf" "SplitWireTurkey\Resources\"
-if exist "Montserrat-VariableFont_wght.ttf" copy "Montserrat-VariableFont_wght.ttf" "SplitWireTurkey\Resources\"
+REM Ensure folders exist
+if not exist "%PROJECT_DIR%\%RES_DIR%" mkdir "%PROJECT_DIR%\%RES_DIR%"
+if not exist "%ARTIFACTS_ROOT%" mkdir "%ARTIFACTS_ROOT%"
+if not exist "%APP_ARTIFACT_DIR%" mkdir "%APP_ARTIFACT_DIR%"
+if not exist "%PACKAGE_INPUT_DIR%" mkdir "%PACKAGE_INPUT_DIR%"
 
 REM Build the application
-cd SplitWireTurkey
-dotnet restore
+dotnet restore "%PROJECT_DIR%\SplitWireTurkey.csproj"
 if errorlevel 1 (
     echo Error: dotnet restore failed!
-    cd ..
-    pause
     exit /b 1
 )
 
-dotnet build -c Release
+dotnet build "%PROJECT_DIR%\SplitWireTurkey.csproj" -c "%CONFIGURATION%" -f "%TFM%"
 if errorlevel 1 (
     echo Error: dotnet build failed!
-    cd ..
-    pause
     exit /b 1
-)
-
-REM Create res folder in output directory
-if not exist "bin\Release\net8.0-windows\res" mkdir "bin\Release\net8.0-windows\res"
-
-REM Copy resource files to res folder
-if exist "Resources\splitwire.ico" copy "Resources\splitwire.ico" "bin\Release\net8.0-windows\res\"
-if exist "Resources\splitwire-logo-128.png" copy "Resources\splitwire-logo-128.png" "bin\Release\net8.0-windows\res\"
-if exist "Resources\splitwireturkeytext.png" copy "Resources\splitwireturkeytext.png" "bin\Release\net8.0-windows\res\"
-if exist "Resources\wiresock-vpn-client-x64-1.4.7.1.msi" copy "Resources\wiresock-vpn-client-x64-1.4.7.1.msi" "bin\Release\net8.0-windows\res\"
-
-REM Copy language files to res folder
-if exist "Resources\Languages" (
-    if not exist "bin\Release\net8.0-windows\res\Languages" mkdir "bin\Release\net8.0-windows\res\Languages"
-    if exist "Resources\Languages\tr.json" copy "Resources\Languages\tr.json" "bin\Release\net8.0-windows\res\Languages\"
-    if exist "Resources\Languages\en.json" copy "Resources\Languages\en.json" "bin\Release\net8.0-windows\res\Languages\"
-    if exist "Resources\Languages\ru.json" copy "Resources\Languages\ru.json" "bin\Release\net8.0-windows\res\Languages\"
-    if exist "Resources\Languages\es.json" copy "Resources\Languages\es.json" "bin\Release\net8.0-windows\res\Languages\"
 )
 
 REM Check if critical files exist
-if not exist "bin\Release\net8.0-windows\SplitWire-Turkey.exe" (
+if not exist "%OUTPUT_DIR%\SplitWire-Turkey.exe" (
     echo Error: Main executable not found! Build may have failed.
-    cd ..
-    pause
     exit /b 1
 )
 
-REM Clean up unnecessary files (keep only .exe and .dll)
-if exist "bin\Release\net8.0-windows\SplitWire-Turkey.deps.json" del "bin\Release\net8.0-windows\SplitWire-Turkey.deps.json"
-if exist "bin\Release\net8.0-windows\SplitWire-Turkey.pdb" del "bin\Release\net8.0-windows\SplitWire-Turkey.pdb"
-if exist "bin\Release\net8.0-windows\SplitWire-Turkey.xml" del "bin\Release\net8.0-windows\SplitWire-Turkey.xml"
+REM Remove unnecessary files
+if exist "%OUTPUT_DIR%\SplitWire-Turkey.deps.json" del "%OUTPUT_DIR%\SplitWire-Turkey.deps.json"
+if exist "%OUTPUT_DIR%\SplitWire-Turkey.pdb" del "%OUTPUT_DIR%\SplitWire-Turkey.pdb"
+if exist "%OUTPUT_DIR%\SplitWire-Turkey.xml" del "%OUTPUT_DIR%\SplitWire-Turkey.xml"
 
-REM Copy AddToRoot contents to Release folder
-echo.
-echo AddToRoot klasoru icerigi Release klasorune kopyalaniyor...
-cd ..
-if exist "AddToRoot" (
-    xcopy "AddToRoot\*" "SplitWireTurkey\bin\Release\net8.0-windows\" /E /I /Y
+REM Copy AddToRoot contents (if present)
+if exist "%ADD_TO_ROOT_DIR%" (
+    xcopy "%ADD_TO_ROOT_DIR%\*" "%OUTPUT_DIR%\" /E /I /Y >nul
     if errorlevel 1 (
-        echo Error: AddToRoot icerigi kopyalanirken hata olustu!
-        pause
+        echo Error: AddToRoot content copy failed.
         exit /b 1
-    ) else (
-        echo AddToRoot icerigi basariyla kopyalandi
     )
 ) else (
-    echo Error: AddToRoot klasoru bulunamadi!
-    pause
+    echo Warning: AddToRoot folder not found, skipping.
+)
+
+REM Standardize release artifacts
+xcopy "%OUTPUT_DIR%\*" "%APP_ARTIFACT_DIR%\" /E /I /Y >nul
+if errorlevel 1 (
+    echo Error: Failed to copy application files to %APP_ARTIFACT_DIR%.
+    exit /b 1
+)
+
+xcopy "%OUTPUT_DIR%\*" "%PACKAGE_INPUT_DIR%\" /E /I /Y >nul
+if errorlevel 1 (
+    echo Error: Failed to prepare package input files in %PACKAGE_INPUT_DIR%.
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\res" mkdir "%PACKAGE_INPUT_DIR%\res"
+
+if exist "%PROJECT_DIR%\Resources" (
+    xcopy "%PROJECT_DIR%\Resources\*" "%PACKAGE_INPUT_DIR%\res\" /E /I /Y >nul
+)
+
+REM Copy installer prerequisites
+if exist "Prerequisites" (
+    xcopy "Prerequisites\*" "%PACKAGE_INPUT_DIR%\Prerequisites\" /E /I /Y >nul
+) else (
+    if exist "..\Prerequisites" (
+        xcopy "..\Prerequisites\*" "%PACKAGE_INPUT_DIR%\Prerequisites\" /E /I /Y >nul
+    ) else (
+        echo Error: Prerequisites folder not found.
+        exit /b 1
+    )
+)
+
+REM Validate required installer prerequisite files
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\VC_redist.x64.exe" (
+    echo Error: Missing prerequisite: VC_redist.x64.exe
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\Windows.Packet.Filter.3.6.1.1.x64.msi" (
+    echo Error: Missing prerequisite: Windows.Packet.Filter.3.6.1.1.x64.msi
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\.NET 8.0\windowsdesktop-runtime-8.0.22-win-x64.exe" (
+    echo Error: Missing prerequisite: windowsdesktop-runtime-8.0.22-win-x64.exe
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\.NET 8.0\windowsdesktop-runtime-8.0.22-win-x86.exe" (
+    echo Error: Missing prerequisite: windowsdesktop-runtime-8.0.22-win-x86.exe
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\res\splitwire.ico" (
+    echo Error: installer icon missing: %PACKAGE_INPUT_DIR%\res\splitwire.ico
     exit /b 1
 )
 
 echo.
 echo Build complete!
-echo Executable created in: SplitWireTurkey\bin\Release\net8.0-windows\SplitWire-Turkey.exe
-echo Resource files copied to: SplitWireTurkey\bin\Release\net8.0-windows\res\
-echo AddToRoot contents copied to: SplitWireTurkey\bin\Release\net8.0-windows\
+echo Application artifact: %APP_ARTIFACT_DIR%
+echo Installer package input: %PACKAGE_INPUT_DIR%
 echo.
-echo Note: This is a simple build without publishing. Run the executable from the bin folder.
-echo.
-echo Build successful! Script will continue automatically... 
+
+endlocal
+exit /b 0
