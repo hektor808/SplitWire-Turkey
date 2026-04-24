@@ -15654,7 +15654,6 @@ $Shortcut.Save()
             
             throw new Exception(errorMessage);
         }
-
         private static string ExtractVersionFromUrl(string url)
         {
             if (string.IsNullOrWhiteSpace(url))
