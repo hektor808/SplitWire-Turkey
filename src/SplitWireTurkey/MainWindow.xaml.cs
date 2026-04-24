@@ -15653,7 +15653,6 @@ $Shortcut.Save()
                              $"• Windows Defender veya firewall ayarlarını kontrol edin";
             
             throw new Exception(errorMessage);
-            return await _downloadService.DownloadFileWithRetryAsync(downloadUrl, fileName, maxRetries);
         }
 
         private static string ExtractVersionFromUrl(string url)
