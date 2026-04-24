@@ -29,6 +29,14 @@ jobs:
         working-directory: src
         run: build_simple.bat
 
+      - name: Debug package input
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse artifacts/package-input | Select-Object FullName
+          if (!(Test-Path "artifacts/package-input/res/splitwire.ico")) {
+            throw "Missing artifacts/package-input/res/splitwire.ico"
+          }
+
       - name: Compile installer
         shell: cmd
         working-directory: src
