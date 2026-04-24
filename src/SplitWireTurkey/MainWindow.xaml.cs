@@ -15664,7 +15664,12 @@ $Shortcut.Save()
             }
 
             var match = Regex.Match(url, @"/([0-9]+\.[0-9]+\.[0-9]+)/", RegexOptions.IgnoreCase);
-            return match.Success ? match.Groups[1].Value : string.Empty;
+            if (!match.Success)
+            {
+                return string.Empty;
+            }
+
+            return DownloadSecurityManifest.NormalizeVersionToken(match.Groups[1].Value);
         }
 
         private static void ValidateDownloadedPayloadOrThrow(string manifestKey, string fileName, byte[] payload, string version)
@@ -15679,9 +15684,15 @@ $Shortcut.Save()
                 throw new InvalidOperationException($"{fileName} sürümü tespit edilemedi. Güvenlik doğrulaması başarısız.");
             }
 
-            if (!policy.Sha256ByVersion.TryGetValue(version, out var expectedHash))
+            var normalizedVersion = DownloadSecurityManifest.NormalizeVersionToken(version);
+            if (string.IsNullOrWhiteSpace(normalizedVersion))
             {
-                throw new InvalidOperationException($"{fileName} {version} sürümü manifestte tanımlı değil. İndirme engellendi.");
+                throw new InvalidOperationException($"{fileName} sürümü formatı geçersiz: {version}");
+            }
+
+            if (!policy.Sha256ByVersion.TryGetValue(normalizedVersion, out var expectedHash))
+            {
+                throw new InvalidOperationException($"{fileName} {normalizedVersion} sürümü manifestte tanımlı değil. İndirme engellendi.");
             }
 
             var actualHash = Convert.ToHexString(SHA256.HashData(payload));

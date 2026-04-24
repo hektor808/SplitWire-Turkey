@@ -428,7 +428,7 @@ namespace SplitWireTurkey.Services
                     using var jsonDoc = JsonDocument.Parse(releasesResponse);
                     var root = jsonDoc.RootElement;
                     var releaseVersion = root.TryGetProperty("tag_name", out var tagNameElement)
-                        ? tagNameElement.GetString()?.TrimStart('v') ?? string.Empty
+                        ? DownloadSecurityManifest.NormalizeVersionToken(tagNameElement.GetString())
                         : string.Empty;
 
                     string downloadUrl = null;
@@ -525,7 +525,15 @@ namespace SplitWireTurkey.Services
             }
 
             var match = Regex.Match(assetName, @"wgcf_v?([0-9]+\.[0-9]+\.[0-9]+)_", RegexOptions.IgnoreCase);
-            return match.Success ? match.Groups[1].Value : fallbackVersion;
+            if (!match.Success)
+            {
+                return DownloadSecurityManifest.NormalizeVersionToken(fallbackVersion);
+            }
+
+            var parsed = DownloadSecurityManifest.NormalizeVersionToken(match.Groups[1].Value);
+            return string.IsNullOrWhiteSpace(parsed)
+                ? DownloadSecurityManifest.NormalizeVersionToken(fallbackVersion)
+                : parsed;
         }
 
         private static bool ValidateFileHash(string filePath, string version, DownloadIntegrityPolicy policy, out string errorMessage)
@@ -537,9 +545,16 @@ namespace SplitWireTurkey.Services
                 return false;
             }
 
-            if (!policy.Sha256ByVersion.TryGetValue(version, out var expectedHash))
+            var normalizedVersion = DownloadSecurityManifest.NormalizeVersionToken(version);
+            if (string.IsNullOrWhiteSpace(normalizedVersion))
             {
-                errorMessage = $"{policy.ArtifactKey} {version} sürümü için manifestte SHA-256 değeri bulunamadı. Kurulum engellendi.";
+                errorMessage = $"{policy.ArtifactKey} için sürüm formatı geçersiz: {version}";
+                return false;
+            }
+
+            if (!policy.Sha256ByVersion.TryGetValue(normalizedVersion, out var expectedHash))
+            {
+                errorMessage = $"{policy.ArtifactKey} {normalizedVersion} sürümü için manifestte SHA-256 değeri bulunamadı. Kurulum engellendi.";
                 return false;
             }
 
