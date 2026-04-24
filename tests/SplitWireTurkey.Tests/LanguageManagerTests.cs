@@ -37,7 +37,7 @@ public sealed class LanguageManagerTests
         LanguageManager.SetResourceProvider(provider);
         LanguageManager.LoadLanguage("TR");
 
-        var result = LanguageManager.GetText("greet", "Dünya");
+        var result = LanguageManager.GetText("greet", (object)"Dünya");
 
         Assert.Equal("Merhaba Dünya", result);
 
