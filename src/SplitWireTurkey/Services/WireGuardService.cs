@@ -9,6 +9,21 @@ namespace SplitWireTurkey.Services
 {
     public class WireGuardService
     {
+        private class CommandExecutionResult
+        {
+            public int ExitCode { get; init; }
+            public string StandardOutput { get; init; } = string.Empty;
+            public string StandardError { get; init; } = string.Empty;
+            public string ExceptionMessage { get; init; } = string.Empty;
+        }
+
+        private class WgcfErrorModel
+        {
+            public string ErrorCode { get; init; } = string.Empty;
+            public string UserMessage { get; init; } = string.Empty;
+            public string DebugDetail { get; init; } = string.Empty;
+        }
+
         private readonly string _wgcfPath;
         private readonly string _resDir;
 
@@ -28,70 +43,115 @@ namespace SplitWireTurkey.Services
                 var wgcfPath = await DownloadWgcfAsync();
                 if (string.IsNullOrEmpty(wgcfPath))
                 {
-                    System.Windows.MessageBox.Show(LanguageManager.GetText("messages", "wgcf_download_failed"), LanguageManager.GetText("messages", "unexpected_error_title"), MessageBoxButton.OK, MessageBoxImage.Error);
+                    HandleWgcfFailure(new WgcfErrorModel
+                    {
+                        ErrorCode = "WGCF_DOWNLOAD_FAILED",
+                        UserMessage = LanguageManager.GetText("messages", "wgcf_download_failed"),
+                        DebugDetail = "DownloadWgcfAsync returned an empty path."
+                    });
                     return false;
                 }
 
-                // Remove existing account file if it exists
+                // Remove existing files if they exist to avoid validating stale output.
                 var accountFile = Path.Combine(_resDir, "wgcf-account.toml");
+                var profileFile = Path.Combine(_resDir, "wgcf-profile.conf");
                 if (File.Exists(accountFile))
                 {
                     try { File.Delete(accountFile); } catch { }
                 }
+                if (File.Exists(profileFile))
+                {
+                    try { File.Delete(profileFile); } catch { }
+                }
 
                 // Register with wgcf
                 var registerResult = await ExecuteCommandAsync(_wgcfPath, "register --accept-tos");
-                
-                if (registerResult != 0)
+                var registerFileValid = IsValidAccountFile(out var registerValidationDetail);
+                if (registerResult.ExitCode == 0 && !registerFileValid)
                 {
-                    // Check if files were created despite the error
-                    if (CheckWgcfFilesExist())
+                    HandleWgcfFailure(new WgcfErrorModel
                     {
-                        // Files exist, continue with the process despite the error
-                        Debug.WriteLine($"Register returned {registerResult} but files exist, continuing...");
-                    }
-                    else
+                        ErrorCode = "WGCF_REGISTER_FILE_INVALID",
+                        UserMessage = string.Format(LanguageManager.GetText("messages", "profile_creation_error"), "register validation failed"),
+                        DebugDetail = $"register exit=0 but account validation failed. {registerValidationDetail}"
+                    });
+                    return false;
+                }
+
+                if (registerResult.ExitCode != 0)
+                {
+                    var safeFallback = registerFileValid && IsSafeRegisterFallback(registerResult.StandardOutput, registerResult.StandardError);
+                    if (!safeFallback)
                     {
-                        // Even if files don't exist, continue without showing error
-                        Debug.WriteLine($"Register returned {registerResult} and files don't exist, but continuing anyway...");
+                        HandleWgcfFailure(new WgcfErrorModel
+                        {
+                            ErrorCode = "WGCF_REGISTER_FAILED",
+                            UserMessage = string.Format(LanguageManager.GetText("messages", "profile_creation_error"), "register command failed"),
+                            DebugDetail = $"register exit={registerResult.ExitCode}; validation={registerValidationDetail}; stderr={registerResult.StandardError}; stdout={registerResult.StandardOutput}"
+                        });
+                        return false;
                     }
+
+                    Debug.WriteLine($"Register fallback accepted. exit={registerResult.ExitCode}; detail={registerValidationDetail}");
                 }
 
                 // Generate profile
                 var generateResult = await ExecuteCommandAsync(_wgcfPath, "generate");
-                
-                // Check if profile file was created despite the error
-                if (generateResult != 0)
+                var generateFileValid = IsValidProfileFile(out var generateValidationDetail);
+
+                if (generateResult.ExitCode == 0 && !generateFileValid)
                 {
-                    if (CheckWgcfFilesExist())
+                    HandleWgcfFailure(new WgcfErrorModel
                     {
-                        // Profile file exists, continue with the process despite the error
-                        Debug.WriteLine($"Generate returned {generateResult} but profile file exists, continuing...");
-                    }
-                    else
+                        ErrorCode = "WGCF_GENERATE_FILE_INVALID",
+                        UserMessage = string.Format(LanguageManager.GetText("messages", "profile_creation_error"), "generate validation failed"),
+                        DebugDetail = $"generate exit=0 but profile validation failed. {generateValidationDetail}"
+                    });
+                    return false;
+                }
+
+                if (generateResult.ExitCode != 0)
+                {
+                    var safeFallback = generateFileValid && IsSafeGenerateFallback(generateResult.StandardOutput, generateResult.StandardError);
+                    if (!safeFallback)
                     {
-                        // Even if files don't exist, continue without showing error
-                        Debug.WriteLine($"Generate returned {generateResult} and files don't exist, but continuing anyway...");
+                        HandleWgcfFailure(new WgcfErrorModel
+                        {
+                            ErrorCode = "WGCF_GENERATE_FAILED",
+                            UserMessage = string.Format(LanguageManager.GetText("messages", "profile_creation_error"), "generate command failed"),
+                            DebugDetail = $"generate exit={generateResult.ExitCode}; validation={generateValidationDetail}; stderr={generateResult.StandardError}; stdout={generateResult.StandardOutput}"
+                        });
+                        return false;
                     }
+
+                    Debug.WriteLine($"Generate fallback accepted. exit={generateResult.ExitCode}; detail={generateValidationDetail}");
                 }
 
                 // Modify configuration
                 var profilePath = Path.Combine(_resDir, "wgcf-profile.conf");
-                if (File.Exists(profilePath))
+                if (File.Exists(profilePath) && IsValidProfileFile(out _))
                 {
                     return await ModifyConfigurationAsync(profilePath, extraFolders, includeBrowsers);
                 }
                 else
                 {
-                    MessageBox.Show(LanguageManager.GetText("messages", "profile_not_found"), 
-                        LanguageManager.GetText("messages", "unexpected_error_title"), MessageBoxButton.OK, MessageBoxImage.Error);
+                    HandleWgcfFailure(new WgcfErrorModel
+                    {
+                        ErrorCode = "WGCF_PROFILE_NOT_FOUND",
+                        UserMessage = LanguageManager.GetText("messages", "profile_not_found"),
+                        DebugDetail = "Profile file is missing or invalid after generate stage."
+                    });
                     return false;
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show(string.Format(LanguageManager.GetText("messages", "profile_creation_error"), ex.Message), 
-                    LanguageManager.GetText("messages", "unexpected_error_title"), MessageBoxButton.OK, MessageBoxImage.Error);
+                HandleWgcfFailure(new WgcfErrorModel
+                {
+                    ErrorCode = "WGCF_PROFILE_CREATE_EXCEPTION",
+                    UserMessage = string.Format(LanguageManager.GetText("messages", "profile_creation_error"), ex.Message),
+                    DebugDetail = ex.ToString()
+                });
                 return false;
             }
         }
@@ -173,7 +233,7 @@ namespace SplitWireTurkey.Services
             }
         }
 
-        private async Task<int> ExecuteCommandAsync(string command, string arguments)
+        private async Task<CommandExecutionResult> ExecuteCommandAsync(string command, string arguments)
         {
             return await Task.Run(() =>
             {
@@ -206,13 +266,22 @@ namespace SplitWireTurkey.Services
                     {
                         Debug.WriteLine($"Error: {error}");
                     }
-                    
-                    return process.ExitCode;
+                    return new CommandExecutionResult
+                    {
+                        ExitCode = process.ExitCode,
+                        StandardOutput = output,
+                        StandardError = error
+                    };
                 }
                 catch (Exception ex)
                 {
                     Debug.WriteLine($"Command execution failed: {ex.Message}");
-                    return -1;
+                    return new CommandExecutionResult
+                    {
+                        ExitCode = -1,
+                        ExceptionMessage = ex.ToString(),
+                        StandardError = ex.Message
+                    };
                 }
             });
         }
@@ -224,16 +293,91 @@ namespace SplitWireTurkey.Services
 
         public bool CheckWgcfFilesExist()
         {
+            var accountIsValid = IsValidAccountFile(out var accountDetail);
+            var profileIsValid = IsValidProfileFile(out var profileDetail);
+
+            Debug.WriteLine($"wgcf-account.toml valid: {accountIsValid}. Detail: {accountDetail}");
+            Debug.WriteLine($"wgcf-profile.conf valid: {profileIsValid}. Detail: {profileDetail}");
+
+            return accountIsValid && profileIsValid;
+        }
+
+        private void HandleWgcfFailure(WgcfErrorModel error)
+        {
+            Debug.WriteLine($"WGCF_ERROR[{error.ErrorCode}] {error.DebugDetail}");
+            MessageBox.Show(error.UserMessage, LanguageManager.GetText("messages", "unexpected_error_title"), MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
+        private bool IsValidAccountFile(out string detail)
+        {
             var accountFile = Path.Combine(_resDir, "wgcf-account.toml");
+            if (!File.Exists(accountFile))
+            {
+                detail = "wgcf-account.toml does not exist.";
+                return false;
+            }
+
+            var content = File.ReadAllText(accountFile);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                detail = "wgcf-account.toml is empty.";
+                return false;
+            }
+
+            var hasLicenseKey = content.IndexOf("license_key", StringComparison.OrdinalIgnoreCase) >= 0;
+            var hasPrivateKey = content.IndexOf("private_key", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!hasLicenseKey || !hasPrivateKey)
+            {
+                detail = $"Missing required account fields. license_key={hasLicenseKey}, private_key={hasPrivateKey}.";
+                return false;
+            }
+
+            detail = "wgcf-account.toml passed validation.";
+            return true;
+        }
+
+        private bool IsValidProfileFile(out string detail)
+        {
             var profileFile = Path.Combine(_resDir, "wgcf-profile.conf");
-            
-            var accountExists = File.Exists(accountFile);
-            var profileExists = File.Exists(profileFile);
-            
-            Debug.WriteLine($"wgcf-account.toml exists: {accountExists}");
-            Debug.WriteLine($"wgcf-profile.conf exists: {profileExists}");
-            
-            return accountExists && profileExists;
+            if (!File.Exists(profileFile))
+            {
+                detail = "wgcf-profile.conf does not exist.";
+                return false;
+            }
+
+            var content = File.ReadAllText(profileFile);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                detail = "wgcf-profile.conf is empty.";
+                return false;
+            }
+
+            var hasInterface = content.IndexOf("[Interface]", StringComparison.OrdinalIgnoreCase) >= 0;
+            var hasPeer = content.IndexOf("[Peer]", StringComparison.OrdinalIgnoreCase) >= 0;
+            var hasEndpoint = content.IndexOf("Endpoint", StringComparison.OrdinalIgnoreCase) >= 0;
+            var hasPrivateKey = content.IndexOf("PrivateKey", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!hasInterface || !hasPeer || !hasEndpoint || !hasPrivateKey)
+            {
+                detail = $"Missing required profile sections/fields. interface={hasInterface}, peer={hasPeer}, endpoint={hasEndpoint}, privateKey={hasPrivateKey}.";
+                return false;
+            }
+
+            detail = "wgcf-profile.conf passed validation.";
+            return true;
+        }
+
+        private bool IsSafeRegisterFallback(string standardOutput, string standardError)
+        {
+            var combined = $"{standardOutput}\n{standardError}";
+            return combined.IndexOf("already", StringComparison.OrdinalIgnoreCase) >= 0
+                || combined.IndexOf("exists", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool IsSafeGenerateFallback(string standardOutput, string standardError)
+        {
+            var combined = $"{standardOutput}\n{standardError}";
+            return combined.IndexOf("already", StringComparison.OrdinalIgnoreCase) >= 0
+                || combined.IndexOf("exists", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private async Task<string> DownloadWgcfAsync()
