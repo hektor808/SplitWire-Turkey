@@ -20,9 +20,10 @@ using System.Windows.Media.Effects;
 using System.Windows.Input;
 using System.Windows.Threading;
 using System.Net.Http;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.RegularExpressions;
 
 namespace SplitWireTurkey
 {
@@ -110,16 +111,7 @@ namespace SplitWireTurkey
         /// </summary>
         private string GetApplicationVersion()
         {
-            try
-            {
-                var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-                return $"{version.Major}.{version.Minor}.{version.Build}";
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Versiyon alma hatası: {ex.Message}");
-                return "1.5.2"; // Fallback versiyon
-            }
+            return _updateService.GetApplicationVersion();
         }
 
         /// <summary>
@@ -156,6 +148,7 @@ namespace SplitWireTurkey
                 Debug.WriteLine($"GitHub'dan sürüm alınırken hata: {ex.Message}");
                 throw new Exception("Güncelleme sunucusuna şu anda ulaşılamıyor. Lütfen internet bağlantınızı kontrol edip birkaç dakika sonra tekrar deneyin.", ex);
             }
+            return await _updateService.GetLatestVersionFromGitHubAsync();
         }
 
         /// <summary>
@@ -163,24 +156,7 @@ namespace SplitWireTurkey
         /// </summary>
         private bool IsNewerVersionAvailable(string currentVersion, string latestVersion)
         {
-            try
-            {
-                WriteUpdateLog($"Versiyon karşılaştırması: Mevcut={currentVersion}, En son={latestVersion}");
-                
-                var current = Version.Parse(currentVersion);
-                var latest = Version.Parse(latestVersion);
-                var isNewer = latest > current;
-                
-                WriteUpdateLog($"Versiyon karşılaştırma sonucu: {(isNewer ? "Yeni sürüm mevcut" : "Güncel sürüm")}");
-                
-                return isNewer;
-            }
-            catch (Exception ex)
-            {
-                WriteUpdateLog($"Versiyon karşılaştırılırken hata: {ex.Message}");
-                Debug.WriteLine($"Versiyon karşılaştırılırken hata: {ex.Message}");
-                return false;
-            }
+            return _updateService.IsNewerVersionAvailable(currentVersion, latestVersion);
         }
 
         /// <summary>
@@ -275,6 +251,11 @@ namespace SplitWireTurkey
 
         private readonly WireGuardService _wireGuardService;
         private readonly WireSockService _wireSockService;
+        private readonly UpdateService _updateService;
+        private readonly DownloadService _downloadService;
+        private readonly ServiceManager _serviceManager;
+        private readonly IRepairService _repairService;
+        private readonly DpiBypassProfileService _dpiBypassProfileService;
         private readonly List<string> _folders;
         private readonly List<string> _zapretPresets;
         
@@ -331,8 +312,19 @@ namespace SplitWireTurkey
             
             _wireGuardService = new WireGuardService();
             _wireSockService = new WireSockService();
+            _updateService = new UpdateService(WriteUpdateLog);
+            _downloadService = new DownloadService();
+            _serviceManager = new ServiceManager();
+            _dpiBypassProfileService = new DpiBypassProfileService();
             _folders = new List<string>();
             _zapretPresets = new List<string>();
+            _repairService = new RepairServiceAdapter(
+                CloseWebCordProcessesInternalAsync,
+                CloseDiscordProcessesInternalAsync,
+                UninstallDiscordInternalAsync,
+                UninstallDiscordPTBInternalAsync,
+                InstallDiscordInternalAsync,
+                InstallDiscordPTBInternalAsync);
             
             // Görev çubuğu karanlık mod desteğini kontrol et
             CheckTaskbarDarkModeSupport();
@@ -1076,32 +1068,7 @@ namespace SplitWireTurkey
 
         private async Task<(string serviceName, bool isInstalled)> CheckServiceAsync(string serviceName)
         {
-            try
-            {
-                var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = "sc",
-                        Arguments = $"query {serviceName}",
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
-                    }
-                };
-
-                process.Start();
-                var output = await process.StandardOutput.ReadToEndAsync();
-                await process.WaitForExitAsync();
-
-                bool isInstalled = output.Contains("SERVICE_NAME:") && !output.Contains("1060");
-                return (serviceName, isInstalled);
-            }
-            catch
-            {
-                return (serviceName, false);
-            }
+            return await _serviceManager.CheckServiceAsync(serviceName);
         }
 
         private void UpdateAllServiceUIFromCache()
@@ -9565,22 +9532,11 @@ Get-DnsClientDohServerAddress
                 }
 
                 File.AppendAllText(zapretLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] SUMMARY bölümü bulundu. Parametreler aranıyor...\n");
-                var lines = logContent.Substring(summaryIndex).Split('\n');
-                string parameters = null;
-                
-                foreach (var line in lines.Skip(1))
+                var parameters = _dpiBypassProfileService.ExtractZapretParametersFromSummary(logContent);
+                if (!string.IsNullOrEmpty(parameters))
                 {
-                    if (line.Contains("--wf-tcp=443"))
-                    {
-                        var tcpIndex = line.IndexOf("--wf-tcp=443");
-                        if (tcpIndex >= 0)
-                        {
-                            parameters = line.Substring(tcpIndex + "--wf-tcp=443".Length).Trim();
-                            File.AppendAllText(zapretLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Parametreler bulundu: {parameters}\n");
-                                        break;
-                                    }
-                                }
-                            }
+                    File.AppendAllText(zapretLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Parametreler bulundu: {parameters}\n");
+                }
 
                 if (string.IsNullOrEmpty(parameters))
                 {
@@ -9595,7 +9551,7 @@ Get-DnsClientDohServerAddress
                 File.AppendAllText(zapretLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Yeni hizmet kurulum yöntemi kullanılıyor...\n");
                 
                 // Parametreleri birleştir: temel parametreler + blockcheck'den gelen parametreler
-                var fullParameters = $"--wf-tcp=80,443 --wf-udp=443,50000,50100 {parameters}";
+                var fullParameters = _dpiBypassProfileService.BuildZapretServiceParameters(parameters);
                 File.AppendAllText(zapretLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Birleştirilmiş parametreler: {fullParameters}\n");
                 
                 // Yeni hizmet kurulum dosyasını oluştur
@@ -10004,6 +9960,216 @@ echo Hizmet kurulum işlemi tamamlandı.
             }
         }
 
+        private sealed class ParameterValidationResult
+        {
+            public bool IsValid { get; set; }
+            public string SanitizedParameters { get; set; } = string.Empty;
+            public string ErrorMessage { get; set; } = string.Empty;
+        }
+
+        private static readonly HashSet<string> ZapretAllowedFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "--wf-tcp", "--wf-udp", "--filter-tcp", "--filter-udp", "--filter-l3", "--hostlist", "--hostlist-auto",
+            "--new", "--dpi-desync", "--dpi-desync-split-pos", "--dpi-desync-repeats", "--dpi-desync-fooling",
+            "--dpi-desync-fake-quic", "--dpi-desync-fake-tls", "--dpi-desync-any-protocol", "--dpi-desync-autottl",
+            "--dpi-desync-cutoff", "--dpi-desync-start", "--dpi-desync-end", "--dpi-desync-fake-tls-mod",
+            "--dpi-desync-fake-tls-sni", "--dpi-desync-fake-tls-padding", "--dpi-desync-ipfrag-pos-tcp",
+            "--dpi-desync-ipfrag-pos-udp", "--dpi-desync-badseq-increment", "--dpi-desync-badseq-ack-increment",
+            "--dpi-desync-ttl", "--dpi-desync-ttl6", "--dpi-desync-split-seqovl", "--dpi-desync-split-seqovl-pattern",
+            "--dpi-desync-fake-http", "--dpi-desync-fake-unknown", "--dpi-desync-skip-nosni", "--debug",
+            "--wf-iface", "--wf-l3", "--ssid-filter"
+        };
+
+        private static readonly HashSet<string> GoodbyeDpiAllowedFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "-p", "-q", "-r", "-s", "-m", "-f", "-e", "-n", "-a", "-w", "-k", "-l", "-j", "-o", "--blacklist"
+        };
+
+        private static readonly HashSet<string> ZapretFlagsWithValue = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "--wf-tcp", "--wf-udp", "--filter-tcp", "--filter-udp", "--filter-l3", "--hostlist", "--hostlist-auto",
+            "--dpi-desync", "--dpi-desync-split-pos", "--dpi-desync-repeats", "--dpi-desync-fooling",
+            "--dpi-desync-fake-quic", "--dpi-desync-fake-tls", "--dpi-desync-any-protocol", "--dpi-desync-autottl",
+            "--dpi-desync-cutoff", "--dpi-desync-start", "--dpi-desync-end", "--dpi-desync-fake-tls-mod",
+            "--dpi-desync-fake-tls-sni", "--dpi-desync-fake-tls-padding", "--dpi-desync-ipfrag-pos-tcp",
+            "--dpi-desync-ipfrag-pos-udp", "--dpi-desync-badseq-increment", "--dpi-desync-badseq-ack-increment",
+            "--dpi-desync-ttl", "--dpi-desync-ttl6", "--dpi-desync-split-seqovl", "--dpi-desync-split-seqovl-pattern",
+            "--dpi-desync-fake-http", "--dpi-desync-fake-unknown", "--wf-iface", "--wf-l3", "--ssid-filter"
+        };
+
+        private static readonly HashSet<string> GoodbyeDpiFlagsWithValue = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "-f", "-e", "-j", "-l", "-o", "--blacklist"
+        };
+
+        private static bool HasUnsafeShellCharacters(string value, out char invalidChar)
+        {
+            foreach (var c in value)
+            {
+                if (c == '&' || c == '|' || c == '<' || c == '>' || c == '^' || c == ';' || c == '`' || c == '\r' || c == '\n')
+                {
+                    invalidChar = c;
+                    return true;
+                }
+            }
+
+            invalidChar = '\0';
+            return false;
+        }
+
+        private static bool TryTokenizeParameters(string input, out List<string> tokens, out string error)
+        {
+            tokens = new List<string>();
+            error = string.Empty;
+
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return true;
+            }
+
+            var current = new System.Text.StringBuilder();
+            bool inQuotes = false;
+
+            foreach (var c in input)
+            {
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                    continue;
+                }
+
+                if (!inQuotes && char.IsWhiteSpace(c))
+                {
+                    if (current.Length > 0)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                    }
+                    continue;
+                }
+
+                current.Append(c);
+            }
+
+            if (inQuotes)
+            {
+                error = "Tırnak işaretleri dengeli değil.";
+                return false;
+            }
+
+            if (current.Length > 0)
+            {
+                tokens.Add(current.ToString());
+            }
+
+            return true;
+        }
+
+        private ParameterValidationResult ValidateParametersWithAllowList(
+            string rawParameters,
+            HashSet<string> allowedFlags,
+            HashSet<string> flagsWithValue,
+            string profileName)
+        {
+            if (HasUnsafeShellCharacters(rawParameters, out var invalidChar))
+            {
+                return new ParameterValidationResult
+                {
+                    IsValid = false,
+                    ErrorMessage = $"{profileName} parametrelerinde tehlikeli karakter tespit edildi: '{invalidChar}'"
+                };
+            }
+
+            if (!TryTokenizeParameters(rawParameters, out var tokens, out var tokenizeError))
+            {
+                return new ParameterValidationResult
+                {
+                    IsValid = false,
+                    ErrorMessage = $"{profileName} parametreleri ayrıştırılamadı: {tokenizeError}"
+                };
+            }
+
+            string awaitingValueFor = null;
+            foreach (var token in tokens)
+            {
+                if (HasUnsafeShellCharacters(token, out invalidChar))
+                {
+                    return new ParameterValidationResult
+                    {
+                        IsValid = false,
+                        ErrorMessage = $"Geçersiz token: '{token}'. Tehlikeli karakter: '{invalidChar}'."
+                    };
+                }
+
+                if (awaitingValueFor != null)
+                {
+                    if (token.StartsWith("-", StringComparison.Ordinal))
+                    {
+                        return new ParameterValidationResult
+                        {
+                            IsValid = false,
+                            ErrorMessage = $"'{awaitingValueFor}' için değer bekleniyordu, ancak '{token}' alındı."
+                        };
+                    }
+
+                    awaitingValueFor = null;
+                    continue;
+                }
+
+                var flag = token;
+                string inlineValue = null;
+                var equalsIndex = token.IndexOf('=');
+                if (equalsIndex > 0)
+                {
+                    flag = token.Substring(0, equalsIndex);
+                    inlineValue = token.Substring(equalsIndex + 1);
+                }
+
+                if (!allowedFlags.Contains(flag))
+                {
+                    return new ParameterValidationResult
+                    {
+                        IsValid = false,
+                        ErrorMessage = $"İzin verilmeyen flag: '{flag}'. Hatalı bölüm: '{token}'."
+                    };
+                }
+
+                if (flagsWithValue.Contains(flag))
+                {
+                    if (inlineValue != null)
+                    {
+                        if (string.IsNullOrWhiteSpace(inlineValue))
+                        {
+                            return new ParameterValidationResult
+                            {
+                                IsValid = false,
+                                ErrorMessage = $"'{flag}' için '=' sonrası değer boş olamaz."
+                            };
+                        }
+                    }
+                    else
+                    {
+                        awaitingValueFor = flag;
+                    }
+                }
+            }
+
+            if (awaitingValueFor != null)
+            {
+                return new ParameterValidationResult
+                {
+                    IsValid = false,
+                    ErrorMessage = $"'{awaitingValueFor}' için değer eksik."
+                };
+            }
+
+            return new ParameterValidationResult
+            {
+                IsValid = true,
+                SanitizedParameters = string.Join(" ", tokens)
+            };
+        }
+
         private async Task<bool> InstallZapretServiceDirectly(string parameters, string zapretLogPath)
         {
             try
@@ -10040,8 +10206,21 @@ echo Hizmet kurulum işlemi tamamlandı.
                 var localZapretPath = GetLocalAppDataZapretPath();
                 var serviceInstallScriptPath = Path.Combine(localZapretPath, "zapret-winws", "service_install_splitwireturkey.cmd");
 
-                // Parametreleri birleştir (--wf-tcp=80,443 --wf-udp=443,50000,50100 + kullanıcı parametreleri)
+                // Parametreleri doğrula ve birleştir (--wf-tcp=80,443 --wf-udp=443,50000,50100 + kullanıcı parametreleri)
                 var combinedParameters = $"--wf-tcp=80,443 --wf-udp=443,50000,50100 {parameters}";
+                var validation = ValidateParametersWithAllowList(
+                    combinedParameters,
+                    ZapretAllowedFlags,
+                    ZapretFlagsWithValue,
+                    "Zapret");
+                if (!validation.IsValid)
+                {
+                    var validationMessage = $"Zapret parametre doğrulama hatası: {validation.ErrorMessage}";
+                    File.AppendAllText(zapretLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] HATA: {validationMessage}\n");
+                    System.Windows.MessageBox.Show(validationMessage, LanguageManager.GetText("messages", "warning_title"), MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                combinedParameters = validation.SanitizedParameters;
                 
                 File.AppendAllText(zapretLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Birleştirilmiş parametreler: {combinedParameters}\n");
 
@@ -11891,6 +12070,22 @@ echo Hizmet kurulum işlemi tamamlandı.
             {
                 if (logPath != null)
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] InstallGoodbyeDPIService başlatılıyor...\n");
+
+                var validation = ValidateParametersWithAllowList(
+                    parameters,
+                    GoodbyeDpiAllowedFlags,
+                    GoodbyeDpiFlagsWithValue,
+                    "GoodbyeDPI");
+                if (!validation.IsValid)
+                {
+                    var validationMessage = $"GoodbyeDPI parametre doğrulama hatası: {validation.ErrorMessage}";
+                    if (logPath != null)
+                        File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] HATA: {validationMessage}\n");
+                    System.Windows.MessageBox.Show(validationMessage, LanguageManager.GetText("messages", "warning_title"), MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+
+                parameters = validation.SanitizedParameters;
                 
                 var localGoodbyeDPIPath = GetLocalAppDataGoodbyeDPIPath();
                 var serviceTemplatePath = Path.Combine(localGoodbyeDPIPath, "service_template.cmd");
@@ -12008,6 +12203,23 @@ echo Hizmet kurulum işlemi tamamlandı.
         {
             try
             {
+                var validation = ValidateParametersWithAllowList(
+                    parameters,
+                    GoodbyeDpiAllowedFlags,
+                    GoodbyeDpiFlagsWithValue,
+                    "GoodbyeDPI");
+                if (!validation.IsValid)
+                {
+                    System.Windows.MessageBox.Show(
+                        $"GoodbyeDPI parametre doğrulama hatası: {validation.ErrorMessage}",
+                        LanguageManager.GetText("messages", "warning_title"),
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return false;
+                }
+
+                parameters = validation.SanitizedParameters;
+
                 var localGoodbyeDPIPath = GetLocalAppDataGoodbyeDPIPath();
                 var batchTemplatePath = Path.Combine(localGoodbyeDPIPath, "batch_template.cmd");
                 
@@ -13302,7 +13514,7 @@ echo Hizmet kurulum işlemi tamamlandı.
                 try
                 {
                     File.AppendAllText(logPath, "4.3. WebCord süreçleri sonlandırılıyor...\n");
-                    await CloseWebCordProcessesAsync();
+                    await _repairService.CloseWebCordProcessesAsync();
                     File.AppendAllText(logPath, "4.3. WebCord süreçleri sonlandırıldı.\n");
                     
                     File.AppendAllText(logPath, "4.4. WebCord masaüstü kısayolu kaldırılıyor...\n");
@@ -14072,12 +14284,12 @@ $Shortcut.Save()
 
                     // 1. Discord'u kapat
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord süreçleri kapatılıyor...\n");
-                    await CloseDiscordProcessesAsync();
+                    await _repairService.CloseDiscordProcessesAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord süreçleri kapatıldı.\n");
 
                     // 2. Discord'u kaldır
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord kaldırılıyor...\n");
-                    await UninstallDiscordAsync();
+                    await _repairService.UninstallDiscordAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord kaldırıldı.\n");
 
                     // 3. ByeDPI kurulumu (sadece hiçbir hizmet yüklü değilse)
@@ -14094,7 +14306,7 @@ $Shortcut.Save()
 
                     // 4. Discord'u yeniden kur
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 4. Discord yeniden kuruluyor...\n");
-                    await InstallDiscordAsync();
+                    await _repairService.InstallDiscordAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 4. Discord yeniden kuruldu.\n");
 
                     // 5. Discord Update.exe'yi Windows 8 uyumluluk moduna ayarla
@@ -14198,17 +14410,17 @@ $Shortcut.Save()
                         
                         // 1. Discord'u kapat
                         File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord süreçleri kapatılıyor...\n");
-                        await CloseDiscordProcessesAsync();
+                        await _repairService.CloseDiscordProcessesAsync();
                         File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord süreçleri kapatıldı.\n");
 
                         // 2. Standart Discord'u kaldır
                         File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Standart Discord kaldırılıyor...\n");
-                        await UninstallDiscordAsync();
+                        await _repairService.UninstallDiscordAsync();
                         File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Standart Discord kaldırıldı.\n");
 
                         // 3. Discord PTB'yi kaldır (eğer varsa)
                         File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 3. Discord PTB kaldırılıyor (eğer varsa)...\n");
-                        await UninstallDiscordPTBAsync();
+                        await _repairService.UninstallDiscordPTBAsync();
                         File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 3. Discord PTB kaldırıldı.\n");
                     }
                     else
@@ -14230,7 +14442,7 @@ $Shortcut.Save()
 
                     // 5. Discord PTB'yi kur
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 5. Discord PTB kuruluyor...\n");
-                    await InstallDiscordPTBAsync();
+                    await _repairService.InstallDiscordPTBAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 5. Discord PTB kuruldu.\n");
 
                     // 6. Durumları güncelle
@@ -14278,12 +14490,12 @@ $Shortcut.Save()
 
                     // 1. Discord'u kapat
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord süreçleri kapatılıyor...\n");
-                    await CloseDiscordProcessesAsync();
+                    await _repairService.CloseDiscordProcessesAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord süreçleri kapatıldı.\n");
 
                     // 2. Discord'u kaldır
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord kaldırılıyor...\n");
-                    await UninstallDiscordAsync();
+                    await _repairService.UninstallDiscordAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord kaldırıldı.\n");
 
                     // 3. %AppData%/discord klasörünü sil
@@ -14385,7 +14597,7 @@ $Shortcut.Save()
 
                 // 2. Discord'u kur
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord kuruluyor...\n");
-                await InstallDiscordAsync();
+                await _repairService.InstallDiscordAsync();
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord kuruldu.\n");
 
                 // 3. Durumları güncelle
@@ -14486,7 +14698,7 @@ $Shortcut.Save()
 
                 // 2. Discord PTB'yi kur
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord PTB kuruluyor...\n");
-                await InstallDiscordPTBAsync();
+                await _repairService.InstallDiscordPTBAsync();
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord PTB kuruldu.\n");
 
                 // 3. Durumları güncelle
@@ -14528,12 +14740,12 @@ $Shortcut.Save()
 
                     // 1. Discord PTB'yi kapat
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord PTB süreçleri kapatılıyor...\n");
-                    await CloseDiscordProcessesAsync();
+                    await _repairService.CloseDiscordProcessesAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 1. Discord PTB süreçleri kapatıldı.\n");
 
                     // 2. Discord PTB'yi kaldır
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord PTB kaldırılıyor...\n");
-                    await UninstallDiscordPTBAsync();
+                    await _repairService.UninstallDiscordPTBAsync();
                     File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] 2. Discord PTB kaldırıldı.\n");
 
                     // 3. %AppData%/discordptb klasörünü sil
@@ -14811,7 +15023,7 @@ $Shortcut.Save()
         /// <summary>
         /// WebCord süreçlerini kapatır
         /// </summary>
-        private async Task CloseWebCordProcessesAsync()
+        private async Task CloseWebCordProcessesInternalAsync()
         {
             try
             {
@@ -14849,7 +15061,7 @@ $Shortcut.Save()
         /// <summary>
         /// Discord süreçlerini kapatır
         /// </summary>
-        private async Task CloseDiscordProcessesAsync()
+        private async Task CloseDiscordProcessesInternalAsync()
         {
             var logPath = GetDiscordRepairLogPath();
             
@@ -14909,7 +15121,7 @@ $Shortcut.Save()
         /// <summary>
         /// Discord'u kaldırır
         /// </summary>
-        private async Task UninstallDiscordAsync()
+        private async Task UninstallDiscordInternalAsync()
         {
             var logPath = GetDiscordRepairLogPath();
             
@@ -14988,7 +15200,7 @@ $Shortcut.Save()
         /// <summary>
         /// Discord PTB'yi kaldırır
         /// </summary>
-        private async Task UninstallDiscordPTBAsync()
+        private async Task UninstallDiscordPTBInternalAsync()
         {
             var logPath = GetDiscordRepairLogPath();
             
@@ -15046,7 +15258,7 @@ $Shortcut.Save()
         /// <summary>
         /// Discord'u kurar
         /// </summary>
-        private async Task InstallDiscordAsync()
+        private async Task InstallDiscordInternalAsync()
         {
             var logPath = GetDiscordRepairLogPath();
             
@@ -15105,13 +15317,14 @@ $Shortcut.Save()
                 // DiscordSetup.exe'yi 3 kez deneyerek indir
                 var downloadUrl = "https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64";
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord indirme başlatılıyor: {downloadUrl}\n");
-                var setupBytes = await DownloadFileWithRetryAsync(downloadUrl, "DiscordSetup.exe", 3);
-                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord indirme tamamlandı, boyut: {setupBytes.Length} bytes\n");
+                var setupDownload = await DownloadFileWithRetryAsync(downloadUrl, "DiscordSetup.exe", 3, "discord_stable");
+                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord indirme tamamlandı, sürüm: {setupDownload.Version}, boyut: {setupDownload.Content.Length} bytes\n");
 
                 // İndirilen dosyayı kaydet
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord kurulum dosyası kaydediliyor...\n");
-                await File.WriteAllBytesAsync(discordSetupPath, setupBytes);
+                await File.WriteAllBytesAsync(discordSetupPath, setupDownload.Content);
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord kurulum dosyası kaydedildi.\n");
+                ValidateInstallerFileOrThrow(discordSetupPath, "discord_stable", setupDownload.Version, "DiscordSetup.exe");
 
                 // DiscordSetup.exe'yi çalıştır
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord kurulum başlatılıyor...\n");
@@ -15231,7 +15444,7 @@ $Shortcut.Save()
         /// <summary>
         /// Discord PTB'yi kurar
         /// </summary>
-        private async Task InstallDiscordPTBAsync()
+        private async Task InstallDiscordPTBInternalAsync()
         {
             var logPath = GetDiscordRepairLogPath();
             
@@ -15250,13 +15463,14 @@ $Shortcut.Save()
                 // DiscordPTBSetup.exe'yi 3 kez deneyerek indir
                 var downloadUrl = "https://discord.com/api/download/ptb?platform=win";
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB indirme başlatılıyor: {downloadUrl}\n");
-                var setupBytes = await DownloadFileWithRetryAsync(downloadUrl, "DiscordPTBSetup.exe", 3);
-                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB indirme tamamlandı, boyut: {setupBytes.Length} bytes\n");
+                var setupDownload = await DownloadFileWithRetryAsync(downloadUrl, "DiscordPTBSetup.exe", 3, "discord_ptb");
+                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB indirme tamamlandı, sürüm: {setupDownload.Version}, boyut: {setupDownload.Content.Length} bytes\n");
 
                 // İndirilen dosyayı kaydet
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB kurulum dosyası kaydediliyor...\n");
-                await File.WriteAllBytesAsync(discordPTBSetupPath, setupBytes);
+                await File.WriteAllBytesAsync(discordPTBSetupPath, setupDownload.Content);
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB kurulum dosyası kaydedildi.\n");
+                ValidateInstallerFileOrThrow(discordPTBSetupPath, "discord_ptb", setupDownload.Version, "DiscordPTBSetup.exe");
 
                 // DiscordPTBSetup.exe'yi çalıştır
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB kurulum başlatılıyor...\n");
@@ -15379,8 +15593,8 @@ $Shortcut.Save()
         /// <param name="downloadUrl">İndirilecek dosyanın URL'i</param>
         /// <param name="fileName">Dosya adı (hata mesajları için)</param>
         /// <param name="maxRetries">Maksimum tekrar deneme sayısı</param>
-        /// <returns>İndirilen dosyanın byte array'i</returns>
-        private async Task<byte[]> DownloadFileWithRetryAsync(string downloadUrl, string fileName, int maxRetries)
+        /// <returns>İndirilen dosya içeriği ve sürüm bilgisi</returns>
+        private async Task<DownloadedFileResult> DownloadFileWithRetryAsync(string downloadUrl, string fileName, int maxRetries, string manifestKey)
         {
             Exception lastException = null;
             
@@ -15395,12 +15609,19 @@ $Shortcut.Save()
                         // Timeout ayarla (45 saniye - SSL handshake için daha uzun)
                         httpClient.Timeout = TimeSpan.FromSeconds(45);
                         
-                        var setupBytes = await httpClient.GetByteArrayAsync(downloadUrl);
+                        using var response = await httpClient.GetAsync(downloadUrl);
+                        response.EnsureSuccessStatusCode();
+
+                        var setupBytes = await response.Content.ReadAsByteArrayAsync();
+                        var resolvedUrl = response.RequestMessage?.RequestUri?.ToString() ?? downloadUrl;
+                        var resolvedVersion = ExtractVersionFromUrl(resolvedUrl);
                         
                         if (setupBytes != null && setupBytes.Length > 0)
                         {
-                            Debug.WriteLine($"{fileName} başarıyla indirildi. Boyut: {setupBytes.Length} byte");
-                            return setupBytes;
+                            ValidateDownloadedPayloadOrThrow(manifestKey, fileName, setupBytes, resolvedVersion);
+
+                            Debug.WriteLine($"{fileName} başarıyla indirildi. Boyut: {setupBytes.Length} byte, sürüm: {resolvedVersion}");
+                            return new DownloadedFileResult(setupBytes, resolvedVersion);
                         }
                         else
                         {
@@ -15433,7 +15654,98 @@ $Shortcut.Save()
                              $"• Windows Defender veya firewall ayarlarını kontrol edin";
             
             throw new Exception(errorMessage);
+            return await _downloadService.DownloadFileWithRetryAsync(downloadUrl, fileName, maxRetries);
         }
+
+        private static string ExtractVersionFromUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return string.Empty;
+            }
+
+            var match = Regex.Match(url, @"/([0-9]+\.[0-9]+\.[0-9]+)/", RegexOptions.IgnoreCase);
+            return match.Success ? match.Groups[1].Value : string.Empty;
+        }
+
+        private static void ValidateDownloadedPayloadOrThrow(string manifestKey, string fileName, byte[] payload, string version)
+        {
+            if (!DownloadSecurityManifest.TryGetPolicy(manifestKey, out var policy))
+            {
+                throw new InvalidOperationException($"{fileName} için güvenlik politikası bulunamadı.");
+            }
+
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                throw new InvalidOperationException($"{fileName} sürümü tespit edilemedi. Güvenlik doğrulaması başarısız.");
+            }
+
+            if (!policy.Sha256ByVersion.TryGetValue(version, out var expectedHash))
+            {
+                throw new InvalidOperationException($"{fileName} {version} sürümü manifestte tanımlı değil. İndirme engellendi.");
+            }
+
+            var actualHash = Convert.ToHexString(SHA256.HashData(payload));
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"{fileName} SHA-256 doğrulaması başarısız. Beklenen: {expectedHash}, Gelen: {actualHash}");
+            }
+
+            if (policy.RequireAuthenticodeSignature)
+            {
+                var tempPath = Path.Combine(Path.GetTempPath(), $"splitwire_{Guid.NewGuid():N}_{fileName}");
+                try
+                {
+                    File.WriteAllBytes(tempPath, payload);
+                    ValidateAuthenticodeOrThrow(tempPath, policy, fileName);
+                }
+                finally
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+            }
+        }
+
+        private static void ValidateAuthenticodeOrThrow(string filePath, DownloadIntegrityPolicy policy, string fileName)
+        {
+            try
+            {
+                var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(filePath));
+                var isPublisherAllowed = policy.AllowedPublisherSubjects.Any(subject =>
+                    cert.Subject.Contains(subject, StringComparison.OrdinalIgnoreCase));
+                if (!isPublisherAllowed)
+                {
+                    throw new InvalidOperationException($"{fileName} imzası beklenen yayıncıya ait değil: {cert.Subject}");
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"{fileName} için Authenticode imza doğrulaması başarısız: {ex.Message}", ex);
+            }
+        }
+
+        private static void ValidateInstallerFileOrThrow(string filePath, string manifestKey, string version, string fileName)
+        {
+            try
+            {
+                var payload = File.ReadAllBytes(filePath);
+                ValidateDownloadedPayloadOrThrow(manifestKey, fileName, payload, version);
+            }
+            catch
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+
+                throw;
+            }
+        }
+
+        private sealed record DownloadedFileResult(byte[] Content, string Version);
 
         /// <summary>
         /// Gelişmiş ayarlarla HttpClient oluşturur
@@ -15471,6 +15783,7 @@ $Shortcut.Save()
             httpClient.DefaultRequestHeaders.Add("Accept", "application/octet-stream, application/exe, */*");
             
             return httpClient;
+            return _downloadService.CreateHttpClientWithAdvancedSettings();
         }
 
         #endregion
