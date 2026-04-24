@@ -1,14 +1,20 @@
 using System;
 using System.Diagnostics;
-using System.Net.Http;
-using System.Security.Authentication;
 using System.Threading.Tasks;
+using SplitWireTurkey.Services.Network;
 using SplitWireTurkey.Services.Security;
 
 namespace SplitWireTurkey.Services
 {
     public class DownloadService
     {
+        private readonly HttpClientFactory _httpClientFactory;
+
+        public DownloadService(HttpClientFactory? httpClientFactory = null)
+        {
+            _httpClientFactory = httpClientFactory ?? new HttpClientFactory();
+        }
+
         public async Task<byte[]> DownloadFileWithRetryAsync(string downloadUrl, string fileName, int maxRetries)
         {
             Exception lastException = null;
@@ -19,7 +25,7 @@ namespace SplitWireTurkey.Services
                 {
                     Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başlatılıyor...");
 
-                    using var httpClient = CreateHttpClientWithAdvancedSettings();
+                    using var httpClient = _httpClientFactory.CreateDownloadClient();
                     httpClient.Timeout = TimeSpan.FromSeconds(45);
 
                     var setupBytes = await httpClient.GetByteArrayAsync(downloadUrl);
@@ -48,43 +54,13 @@ namespace SplitWireTurkey.Services
                 }
             }
 
-            var certificateFailureReason = lastException != null && CertificatePolicyService.IsCertificateValidationFailure(lastException)
-                ? " (sertifika doğrulama hatası)"
-                : string.Empty;
-
-            throw new Exception(
-                $"{fileName} dosyası {maxRetries} kez denendikten sonra indirilemedi.\n\n" +
-                $"Son hata: {lastException?.Message}{certificateFailureReason}\n\n" +
-                $"Hata detayı: {lastException}\n\n" +
-                $"İndirme URL'i: {downloadUrl}\n\n" +
-                "Çözüm önerileri:\n" +
-                "• İnternet bağlantınızı kontrol edin\n" +
-                "• Güvenlik yazılımınızın Discord'u engellemediğinden emin olun\n" +
-                "• Sunucu sertifika doğrulama hatası varsa sistem tarih/saat ve kök sertifikaları kontrol edin\n" +
-                "• Proxy veya VPN kullanıyorsanız kapatmayı deneyin\n" +
-                "• Windows Defender veya firewall ayarlarını kontrol edin");
-        }
-
-        public HttpClient CreateHttpClientWithAdvancedSettings()
-        {
-            var handler = new HttpClientHandler
-            {
-                SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-                UseProxy = false,
-                Proxy = null,
-                MaxConnectionsPerServer = 1,
-                MaxAutomaticRedirections = 3,
-                UseDefaultCredentials = false,
-                ServerCertificateCustomValidationCallback = (_, _, _, sslPolicyErrors) =>
-                {
-                    return CertificatePolicyService.IsServerCertificateValid(sslPolicyErrors);
-                }
-            };
-
-            var httpClient = new HttpClient(handler);
-            httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-            httpClient.DefaultRequestHeaders.Add("Accept", "application/octet-stream, application/exe, */*");
-            return httpClient;
+            throw new Exception(HttpClientFactory.BuildStandardDownloadFailureMessage(
+                fileName,
+                maxRetries,
+                lastException?.Message,
+                lastException != null && CertificatePolicyService.IsCertificateValidationFailure(lastException),
+                downloadUrl,
+                lastException?.ToString()));
         }
     }
 }

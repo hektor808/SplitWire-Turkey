@@ -12,6 +12,7 @@ using System.Windows.Documents;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using SplitWireTurkey.Services;
+using SplitWireTurkey.Services.Network;
 using SplitWireTurkey.Services.Security;
 using System.Runtime.InteropServices;
 using MaterialDesignThemes.Wpf;
@@ -124,8 +125,7 @@ namespace SplitWireTurkey
             {
                 WriteUpdateLog("GitHub'dan en son sürüm bilgisi alınıyor...");
                 
-                using var httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Add("User-Agent", "SplitWire-Turkey");
+                using var httpClient = _httpClientFactory.CreateGitHubApiClient();
                 
                 var response = await httpClient.GetStringAsync("https://api.github.com/repos/cagritaskn/SplitWire-Turkey/releases/latest");
                 WriteUpdateLog($"GitHub API Response alındı: {response.Length} karakter");
@@ -256,6 +256,7 @@ namespace SplitWireTurkey
         private readonly ServiceManager _serviceManager;
         private readonly IRepairService _repairService;
         private readonly DpiBypassProfileService _dpiBypassProfileService;
+        private readonly HttpClientFactory _httpClientFactory;
         private readonly List<string> _folders;
         private readonly List<string> _zapretPresets;
         
@@ -313,7 +314,8 @@ namespace SplitWireTurkey
             _wireGuardService = new WireGuardService();
             _wireSockService = new WireSockService();
             _updateService = new UpdateService(WriteUpdateLog);
-            _downloadService = new DownloadService();
+            _httpClientFactory = new HttpClientFactory();
+            _downloadService = new DownloadService(_httpClientFactory);
             _serviceManager = new ServiceManager();
             _dpiBypassProfileService = new DpiBypassProfileService();
             _folders = new List<string>();
@@ -13892,7 +13894,7 @@ echo Hizmet kurulum işlemi tamamlandı.
                             var downloadUrl = "https://github.com/SpacingBat3/WebCord/releases/download/v4.12.1/WebCord-win32-x64-4.12.1.zip";
                             var zipPath = Path.Combine(sourcePath, "WebCord-win32-x64-4.12.1.zip");
                             
-                            using (var httpClient = CreateHttpClientWithAdvancedSettings())
+                            using (var httpClient = _httpClientFactory.CreateDownloadClient())
                             {
                                 httpClient.Timeout = TimeSpan.FromMinutes(10); // İndirme için 10 dakikalık timeout
                                 
@@ -15604,7 +15606,7 @@ $Shortcut.Save()
                 {
                     Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başlatılıyor...");
                     
-                    using (var httpClient = CreateHttpClientWithAdvancedSettings())
+                    using (var httpClient = _httpClientFactory.CreateDownloadClient())
                     {
                         // Timeout ayarla (45 saniye - SSL handshake için daha uzun)
                         httpClient.Timeout = TimeSpan.FromSeconds(45);
@@ -15648,20 +15650,11 @@ $Shortcut.Save()
             }
             
             // Tüm denemeler başarısız oldu
-            var certificateFailureReason = lastException != null && CertificatePolicyService.IsCertificateValidationFailure(lastException)
-                ? " (sertifika doğrulama hatası)"
-                : string.Empty;
-
-            var errorMessage = $"{fileName} dosyası {maxRetries} kez denendikten sonra indirilemedi.\n\n" +
-                             $"Son hata: {lastException?.Message}{certificateFailureReason}\n\n" +
-                             $"Çözüm önerileri:\n" +
-                             $"• İnternet bağlantınızı kontrol edin\n" +
-                             $"• Sunucu sertifika doğrulama hatası varsa sistem tarih/saat ve kök sertifikaları kontrol edin\n" +
-                             $"• Güvenlik yazılımınızın indirme işlemini engellemediğinden emin olun\n" +
-                             $"• Proxy veya VPN kullanıyorsanız kapatmayı deneyin\n" +
-                             $"• Windows Defender veya firewall ayarlarını kontrol edin";
-            
-            throw new Exception(errorMessage);
+            throw new Exception(HttpClientFactory.BuildStandardDownloadFailureMessage(
+                fileName,
+                maxRetries,
+                lastException?.Message,
+                lastException != null && CertificatePolicyService.IsCertificateValidationFailure(lastException)));
         }
         private static string ExtractVersionFromUrl(string url)
         {
@@ -15763,44 +15756,6 @@ $Shortcut.Save()
         }
 
         private sealed record DownloadedFileResult(byte[] Content, string Version);
-
-        /// <summary>
-        /// Gelişmiş ayarlarla HttpClient oluşturur
-        /// </summary>
-        private System.Net.Http.HttpClient CreateHttpClientWithAdvancedSettings()
-        {
-            var handler = new System.Net.Http.HttpClientHandler();
-            
-            // SSL/TLS ayarları
-            handler.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
-            
-            // Sertifika doğrulama ayarları
-            handler.ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) =>
-            {
-                return CertificatePolicyService.IsServerCertificateValid(sslPolicyErrors);
-            };
-            
-            // Proxy ayarları
-            handler.UseProxy = false; // Proxy kullanma
-            handler.Proxy = null;
-            
-            // Bağlantı ayarları
-            handler.MaxConnectionsPerServer = 1;
-            handler.MaxAutomaticRedirections = 3;
-            
-            // Keep-alive ayarları
-            handler.UseDefaultCredentials = false;
-            
-            var httpClient = new System.Net.Http.HttpClient(handler);
-            
-            // User-Agent ekle
-            httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-            
-            // Accept header ekle
-            httpClient.DefaultRequestHeaders.Add("Accept", "application/octet-stream, application/exe, */*");
-            
-            return httpClient;
-        }
 
         #endregion
     }
