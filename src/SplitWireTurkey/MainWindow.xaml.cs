@@ -21,6 +21,9 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using System.Net.Http;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.RegularExpressions;
 
 namespace SplitWireTurkey
 {
@@ -15279,13 +15282,14 @@ $Shortcut.Save()
                 // DiscordSetup.exe'yi 3 kez deneyerek indir
                 var downloadUrl = "https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64";
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord indirme başlatılıyor: {downloadUrl}\n");
-                var setupBytes = await DownloadFileWithRetryAsync(downloadUrl, "DiscordSetup.exe", 3);
-                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord indirme tamamlandı, boyut: {setupBytes.Length} bytes\n");
+                var setupDownload = await DownloadFileWithRetryAsync(downloadUrl, "DiscordSetup.exe", 3, "discord_stable");
+                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord indirme tamamlandı, sürüm: {setupDownload.Version}, boyut: {setupDownload.Content.Length} bytes\n");
 
                 // İndirilen dosyayı kaydet
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord kurulum dosyası kaydediliyor...\n");
-                await File.WriteAllBytesAsync(discordSetupPath, setupBytes);
+                await File.WriteAllBytesAsync(discordSetupPath, setupDownload.Content);
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord kurulum dosyası kaydedildi.\n");
+                ValidateInstallerFileOrThrow(discordSetupPath, "discord_stable", setupDownload.Version, "DiscordSetup.exe");
 
                 // DiscordSetup.exe'yi çalıştır
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord kurulum başlatılıyor...\n");
@@ -15424,13 +15428,14 @@ $Shortcut.Save()
                 // DiscordPTBSetup.exe'yi 3 kez deneyerek indir
                 var downloadUrl = "https://discord.com/api/download/ptb?platform=win";
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB indirme başlatılıyor: {downloadUrl}\n");
-                var setupBytes = await DownloadFileWithRetryAsync(downloadUrl, "DiscordPTBSetup.exe", 3);
-                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB indirme tamamlandı, boyut: {setupBytes.Length} bytes\n");
+                var setupDownload = await DownloadFileWithRetryAsync(downloadUrl, "DiscordPTBSetup.exe", 3, "discord_ptb");
+                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB indirme tamamlandı, sürüm: {setupDownload.Version}, boyut: {setupDownload.Content.Length} bytes\n");
 
                 // İndirilen dosyayı kaydet
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB kurulum dosyası kaydediliyor...\n");
-                await File.WriteAllBytesAsync(discordPTBSetupPath, setupBytes);
+                await File.WriteAllBytesAsync(discordPTBSetupPath, setupDownload.Content);
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB kurulum dosyası kaydedildi.\n");
+                ValidateInstallerFileOrThrow(discordPTBSetupPath, "discord_ptb", setupDownload.Version, "DiscordPTBSetup.exe");
 
                 // DiscordPTBSetup.exe'yi çalıştır
                 File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Discord PTB kurulum başlatılıyor...\n");
@@ -15553,11 +15558,161 @@ $Shortcut.Save()
         /// <param name="downloadUrl">İndirilecek dosyanın URL'i</param>
         /// <param name="fileName">Dosya adı (hata mesajları için)</param>
         /// <param name="maxRetries">Maksimum tekrar deneme sayısı</param>
-        /// <returns>İndirilen dosyanın byte array'i</returns>
-        private async Task<byte[]> DownloadFileWithRetryAsync(string downloadUrl, string fileName, int maxRetries)
+        /// <returns>İndirilen dosya içeriği ve sürüm bilgisi</returns>
+        private async Task<DownloadedFileResult> DownloadFileWithRetryAsync(string downloadUrl, string fileName, int maxRetries, string manifestKey)
         {
+            Exception lastException = null;
+            
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başlatılıyor...");
+                    
+                    using (var httpClient = CreateHttpClientWithAdvancedSettings())
+                    {
+                        // Timeout ayarla (45 saniye - SSL handshake için daha uzun)
+                        httpClient.Timeout = TimeSpan.FromSeconds(45);
+                        
+                        using var response = await httpClient.GetAsync(downloadUrl);
+                        response.EnsureSuccessStatusCode();
+
+                        var setupBytes = await response.Content.ReadAsByteArrayAsync();
+                        var resolvedUrl = response.RequestMessage?.RequestUri?.ToString() ?? downloadUrl;
+                        var resolvedVersion = ExtractVersionFromUrl(resolvedUrl);
+                        
+                        if (setupBytes != null && setupBytes.Length > 0)
+                        {
+                            ValidateDownloadedPayloadOrThrow(manifestKey, fileName, setupBytes, resolvedVersion);
+
+                            Debug.WriteLine($"{fileName} başarıyla indirildi. Boyut: {setupBytes.Length} byte, sürüm: {resolvedVersion}");
+                            return new DownloadedFileResult(setupBytes, resolvedVersion);
+                        }
+                        else
+                        {
+                            throw new Exception("İndirilen dosya boş veya geçersiz");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+                    Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başarısız: {ex.Message}");
+                    
+                    if (attempt < maxRetries)
+                    {
+                        // Sonraki denemeden önce bekle (artan süre: 3, 6, 9 saniye)
+                        var waitTime = attempt * 3;
+                        Debug.WriteLine($"Sonraki deneme öncesi {waitTime} saniye bekleniyor...");
+                        await Task.Delay(waitTime * 1000);
+                    }
+                }
+            }
+            
+            // Tüm denemeler başarısız oldu
+            var errorMessage = $"{fileName} dosyası {maxRetries} kez denendikten sonra indirilemedi.\n\n" +
+                             $"Son hata: {lastException?.Message}\n\n" +
+                             $"Hata detayı: {lastException?.ToString()}\n\n" +
+                             $"İndirme URL'i: {downloadUrl}\n\n" +
+                             $"Çözüm önerileri:\n" +
+                             $"• İnternet bağlantınızı kontrol edin\n" +
+                             $"• Güvenlik yazılımınızın Discord'u engellemediğinden emin olun\n" +
+                             $"• Proxy veya VPN kullanıyorsanız kapatmayı deneyin\n" +
+                             $"• Windows Defender veya firewall ayarlarını kontrol edin";
+            
+            throw new Exception(errorMessage);
             return await _downloadService.DownloadFileWithRetryAsync(downloadUrl, fileName, maxRetries);
         }
+
+        private static string ExtractVersionFromUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return string.Empty;
+            }
+
+            var match = Regex.Match(url, @"/([0-9]+\.[0-9]+\.[0-9]+)/", RegexOptions.IgnoreCase);
+            return match.Success ? match.Groups[1].Value : string.Empty;
+        }
+
+        private static void ValidateDownloadedPayloadOrThrow(string manifestKey, string fileName, byte[] payload, string version)
+        {
+            if (!DownloadSecurityManifest.TryGetPolicy(manifestKey, out var policy))
+            {
+                throw new InvalidOperationException($"{fileName} için güvenlik politikası bulunamadı.");
+            }
+
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                throw new InvalidOperationException($"{fileName} sürümü tespit edilemedi. Güvenlik doğrulaması başarısız.");
+            }
+
+            if (!policy.Sha256ByVersion.TryGetValue(version, out var expectedHash))
+            {
+                throw new InvalidOperationException($"{fileName} {version} sürümü manifestte tanımlı değil. İndirme engellendi.");
+            }
+
+            var actualHash = Convert.ToHexString(SHA256.HashData(payload));
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"{fileName} SHA-256 doğrulaması başarısız. Beklenen: {expectedHash}, Gelen: {actualHash}");
+            }
+
+            if (policy.RequireAuthenticodeSignature)
+            {
+                var tempPath = Path.Combine(Path.GetTempPath(), $"splitwire_{Guid.NewGuid():N}_{fileName}");
+                try
+                {
+                    File.WriteAllBytes(tempPath, payload);
+                    ValidateAuthenticodeOrThrow(tempPath, policy, fileName);
+                }
+                finally
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+            }
+        }
+
+        private static void ValidateAuthenticodeOrThrow(string filePath, DownloadIntegrityPolicy policy, string fileName)
+        {
+            try
+            {
+                var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(filePath));
+                var isPublisherAllowed = policy.AllowedPublisherSubjects.Any(subject =>
+                    cert.Subject.Contains(subject, StringComparison.OrdinalIgnoreCase));
+                if (!isPublisherAllowed)
+                {
+                    throw new InvalidOperationException($"{fileName} imzası beklenen yayıncıya ait değil: {cert.Subject}");
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"{fileName} için Authenticode imza doğrulaması başarısız: {ex.Message}", ex);
+            }
+        }
+
+        private static void ValidateInstallerFileOrThrow(string filePath, string manifestKey, string version, string fileName)
+        {
+            try
+            {
+                var payload = File.ReadAllBytes(filePath);
+                ValidateDownloadedPayloadOrThrow(manifestKey, fileName, payload, version);
+            }
+            catch
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+
+                throw;
+            }
+        }
+
+        private sealed record DownloadedFileResult(byte[] Content, string Version);
 
         /// <summary>
         /// Gelişmiş ayarlarla HttpClient oluşturur
