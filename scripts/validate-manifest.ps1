@@ -50,8 +50,14 @@ function Assert-ManifestContainsHash([string]$ArtifactKey, [string]$Version, [st
 
     $escapedVersion = [regex]::Escape($Version)
     $escapedHash = [regex]::Escape($Hash)
-    $entryPattern = "\[\`\"$escapedVersion\`\"\]\s*=\s*\`\"$escapedHash\`\""
-    $artifactSectionPattern = "\[\`\"$([regex]::Escape($ArtifactKey))\`\"\].*?sha256ByVersion:\s*new Dictionary<string, string>\(StringComparer\.OrdinalIgnoreCase\)\s*\{(?<entries>.*?)\}\)"
+    $escapedArtifactKey = [regex]::Escape($ArtifactKey)
+
+    $entryPattern = '\["' + $escapedVersion + '"\]\s*=\s*"' + $escapedHash + '"'
+    $artifactSectionPattern =
+        '\["' + $escapedArtifactKey + '"\].*?' +
+        'sha256ByVersion:\s*new Dictionary<string, string>\(StringComparer\.OrdinalIgnoreCase\)\s*\{' +
+        '(?<entries>.*?)' +
+        '\}\)'
 
     $artifactMatch = [regex]::Match($manifestContent, $artifactSectionPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
     if (-not $artifactMatch.Success) {
