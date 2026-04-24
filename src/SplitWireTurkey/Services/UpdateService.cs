@@ -3,16 +3,35 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
+using SplitWireTurkey.Services.Models;
+using SplitWireTurkey.Services.Network;
 
 namespace SplitWireTurkey.Services
 {
+    public enum UpdateCheckStatus
+    {
+        UpToDate,
+        UpdateAvailable,
+        Unreachable,
+        Failed
+    }
+
+    public sealed class UpdateCheckResult
+    {
+        public UpdateCheckStatus Status { get; init; }
+        public string CurrentVersion { get; init; } = "1.0.0";
+        public string? LatestVersion { get; init; }
+    }
+
     public class UpdateService
     {
         private readonly Action<string> _writeLog;
+        private readonly HttpClientFactory _httpClientFactory;
 
-        public UpdateService(Action<string> writeLog)
+        public UpdateService(Action<string> writeLog, HttpClientFactory? httpClientFactory = null)
         {
             _writeLog = writeLog ?? (_ => { });
+            _httpClientFactory = httpClientFactory ?? new HttpClientFactory();
         }
 
         public string GetApplicationVersion()
@@ -35,8 +54,7 @@ namespace SplitWireTurkey.Services
             {
                 _writeLog("GitHub'dan en son sürüm bilgisi alınıyor...");
 
-                using var httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Add("User-Agent", "SplitWire-Turkey");
+                using var httpClient = _httpClientFactory.CreateGitHubApiClient();
 
                 var response = await httpClient.GetStringAsync("https://api.github.com/repos/cagritaskn/SplitWire-Turkey/releases/latest");
                 _writeLog($"GitHub API Response alındı: {response.Length} karakter");
@@ -56,7 +74,7 @@ namespace SplitWireTurkey.Services
             {
                 _writeLog($"GitHub'dan sürüm alınırken hata: {ex.Message}");
                 Debug.WriteLine($"GitHub'dan sürüm alınırken hata: {ex.Message}");
-                return "1.0.0";
+                throw new HttpRequestException("GitHub sürüm bilgisi alınamadı.", ex);
             }
         }
 
@@ -78,11 +96,39 @@ namespace SplitWireTurkey.Services
                 return false;
             }
         }
-    }
 
-    public class GitHubRelease
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("tag_name")]
-        public string TagName { get; set; }
+        public async Task<UpdateCheckResult> CheckForUpdatesAsync()
+        {
+            try
+            {
+                var currentVersion = GetApplicationVersion();
+                _writeLog($"Mevcut uygulama sürümü: {currentVersion}");
+
+                var latestVersion = await GetLatestVersionFromGitHubAsync();
+                var isUpdateAvailable = IsNewerVersionAvailable(currentVersion, latestVersion);
+
+                return new UpdateCheckResult
+                {
+                    Status = isUpdateAvailable ? UpdateCheckStatus.UpdateAvailable : UpdateCheckStatus.UpToDate,
+                    CurrentVersion = currentVersion,
+                    LatestVersion = latestVersion
+                };
+            }
+            catch (Exception ex)
+            {
+                _writeLog($"Güncelleme kontrolü sırasında hata: {ex.Message}");
+                Debug.WriteLine($"Güncelleme kontrolü sırasında hata: {ex.Message}");
+
+                var isNetworkError =
+                    ex is HttpRequestException ||
+                    ex.InnerException is HttpRequestException;
+
+                return new UpdateCheckResult
+                {
+                    Status = isNetworkError ? UpdateCheckStatus.Unreachable : UpdateCheckStatus.Failed,
+                    CurrentVersion = GetApplicationVersion()
+                };
+            }
+        }
     }
 }

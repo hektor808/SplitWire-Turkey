@@ -119,49 +119,6 @@ namespace SplitWireTurkey
         }
 
         /// <summary>
-        /// GitHub'dan en son sürümü alır
-        /// </summary>
-        private async Task<string> GetLatestVersionFromGitHubAsync()
-        {
-            try
-            {
-                WriteUpdateLog("GitHub'dan en son sürüm bilgisi alınıyor...");
-                
-                using var httpClient = _httpClientFactory.CreateGitHubApiClient();
-                
-                var response = await httpClient.GetStringAsync("https://api.github.com/repos/cagritaskn/SplitWire-Turkey/releases/latest");
-                WriteUpdateLog($"GitHub API Response alındı: {response.Length} karakter");
-                
-                var releaseInfo = JsonSerializer.Deserialize<GitHubRelease>(response);
-                
-                if (releaseInfo == null)
-                {
-                    WriteUpdateLog("GitHub API response'u null olarak deserialize edildi");
-                    return "1.0.0";
-                }
-                
-                var latestVersion = releaseInfo?.TagName?.TrimStart('v') ?? "1.0.0";
-                WriteUpdateLog($"GitHub'dan alınan en son sürüm: {latestVersion}");
-                
-                return latestVersion;
-            }
-            catch (Exception ex)
-            {
-                WriteUpdateLog($"GitHub'dan sürüm alınırken hata: {ex.Message}");
-                Debug.WriteLine($"GitHub'dan sürüm alınırken hata: {ex.Message}");
-                throw new Exception("Güncelleme sunucusuna şu anda ulaşılamıyor. Lütfen internet bağlantınızı kontrol edip birkaç dakika sonra tekrar deneyin.", ex);
-            }
-        }
-
-        /// <summary>
-        /// İki versiyon numarasını karşılaştırır
-        /// </summary>
-        private bool IsNewerVersionAvailable(string currentVersion, string latestVersion)
-        {
-            return _updateService.IsNewerVersionAvailable(currentVersion, latestVersion);
-        }
-
-        /// <summary>
         /// Güncelleme bildirimi gösterir
         /// </summary>
         private void ShowUpdateNotification(string latestVersion)
@@ -216,39 +173,39 @@ namespace SplitWireTurkey
         /// </summary>
         private async Task CheckForUpdatesAsync()
         {
-            try
+            WriteUpdateLog("=== GÜNCELLEME KONTROLÜ BAŞLATILIYOR ===");
+            var updateResult = await _updateService.CheckForUpdatesAsync();
+
+            switch (updateResult.Status)
             {
-                WriteUpdateLog("=== GÜNCELLEME KONTROLÜ BAŞLATILIYOR ===");
-                
-                var currentVersion = GetApplicationVersion();
-                WriteUpdateLog($"Mevcut uygulama sürümü: {currentVersion}");
-                
-                var latestVersion = await GetLatestVersionFromGitHubAsync();
-                
-                if (IsNewerVersionAvailable(currentVersion, latestVersion))
-                {
+                case UpdateCheckStatus.UpdateAvailable:
                     WriteUpdateLog("Yeni sürüm tespit edildi, kullanıcıya bildirim gösteriliyor...");
-                    // UI thread'de güncelleme bildirimini göster
-                    Dispatcher.Invoke(() => ShowUpdateNotification(latestVersion));
-                }
-                else
-                {
+                    Dispatcher.Invoke(() => ShowUpdateNotification(updateResult.LatestVersion ?? updateResult.CurrentVersion));
+                    break;
+                case UpdateCheckStatus.UpToDate:
                     WriteUpdateLog("Uygulama güncel durumda, güncelleme gerekmiyor");
-                }
-                
-                WriteUpdateLog("=== GÜNCELLEME KONTROLÜ TAMAMLANDI ===");
+                    break;
+                case UpdateCheckStatus.Unreachable:
+                    WriteUpdateLog("Güncelleme sunucusuna ulaşılamadı");
+                    Dispatcher.Invoke(() =>
+                        System.Windows.MessageBox.Show(
+                            "Güncelleme kontrolü tamamlanamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.",
+                            LanguageManager.GetText("messages", "update_title"),
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning));
+                    break;
+                default:
+                    WriteUpdateLog("Güncelleme kontrolü beklenmeyen bir hata nedeniyle tamamlanamadı");
+                    Dispatcher.Invoke(() =>
+                        System.Windows.MessageBox.Show(
+                            "Güncelleme kontrolü sırasında bir hata oluştu.",
+                            LanguageManager.GetText("messages", "update_title"),
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning));
+                    break;
             }
-            catch (Exception ex)
-            {
-                WriteUpdateLog($"Güncelleme kontrolü sırasında hata: {ex.Message}");
-                Debug.WriteLine($"Güncelleme kontrolü sırasında hata: {ex.Message}");
-                Dispatcher.Invoke(() =>
-                    System.Windows.MessageBox.Show(
-                        "Güncelleme kontrolü tamamlanamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.",
-                        LanguageManager.GetText("messages", "update_title"),
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning));
-            }
+
+            WriteUpdateLog("=== GÜNCELLEME KONTROLÜ TAMAMLANDI ===");
         }
 
         private readonly WireGuardService _wireGuardService;
@@ -320,8 +277,8 @@ namespace SplitWireTurkey
             
             _wireGuardService = new WireGuardService();
             _wireSockService = new WireSockService();
-            _updateService = new UpdateService(WriteUpdateLog);
             _httpClientFactory = new HttpClientFactory();
+            _updateService = new UpdateService(WriteUpdateLog, _httpClientFactory);
             _downloadService = new DownloadService(_httpClientFactory);
             _serviceManager = new ServiceManager();
             _dpiBypassProfileService = new DpiBypassProfileService();
@@ -15123,39 +15080,3 @@ $Shortcut.Save()
         #endregion
     }
 }
-
-/// <summary>
-/// GitHub release bilgilerini temsil eden sınıf
-/// </summary>
-public class GitHubRelease
-{
-    [JsonPropertyName("tag_name")]
-    public string TagName { get; set; }
-    
-    [JsonPropertyName("name")]
-    public string Name { get; set; }
-    
-    [JsonPropertyName("body")]
-    public string Body { get; set; }
-    
-    [JsonPropertyName("created_at")]
-    public DateTime CreatedAt { get; set; }
-    
-    [JsonPropertyName("published_at")]
-    public DateTime PublishedAt { get; set; }
-    
-    [JsonPropertyName("prerelease")]
-    public bool Prerelease { get; set; }
-    
-    [JsonPropertyName("draft")]
-    public bool Draft { get; set; }
-    
-    [JsonPropertyName("html_url")]
-    public string HtmlUrl { get; set; }
-    
-    [JsonPropertyName("tarball_url")]
-    public string TarballUrl { get; set; }
-    
-    [JsonPropertyName("zipball_url")]
-    public string ZipballUrl { get; set; }
-} 
