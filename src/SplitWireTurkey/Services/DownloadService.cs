@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Security.Authentication;
 using System.Threading.Tasks;
+using SplitWireTurkey.Services.Security;
 
 namespace SplitWireTurkey.Services
 {
@@ -33,7 +34,10 @@ namespace SplitWireTurkey.Services
                 catch (Exception ex)
                 {
                     lastException = ex;
-                    Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başarısız: {ex.Message}");
+                    var certificateErrorHint = CertificatePolicyService.IsCertificateValidationFailure(ex)
+                        ? " (sertifika doğrulama hatası)"
+                        : string.Empty;
+                    Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başarısız: {ex.Message}{certificateErrorHint}");
 
                     if (attempt < maxRetries)
                     {
@@ -44,14 +48,19 @@ namespace SplitWireTurkey.Services
                 }
             }
 
+            var certificateFailureReason = lastException != null && CertificatePolicyService.IsCertificateValidationFailure(lastException)
+                ? " (sertifika doğrulama hatası)"
+                : string.Empty;
+
             throw new Exception(
                 $"{fileName} dosyası {maxRetries} kez denendikten sonra indirilemedi.\n\n" +
-                $"Son hata: {lastException?.Message}\n\n" +
+                $"Son hata: {lastException?.Message}{certificateFailureReason}\n\n" +
                 $"Hata detayı: {lastException}\n\n" +
                 $"İndirme URL'i: {downloadUrl}\n\n" +
                 "Çözüm önerileri:\n" +
                 "• İnternet bağlantınızı kontrol edin\n" +
                 "• Güvenlik yazılımınızın Discord'u engellemediğinden emin olun\n" +
+                "• Sunucu sertifika doğrulama hatası varsa sistem tarih/saat ve kök sertifikaları kontrol edin\n" +
                 "• Proxy veya VPN kullanıyorsanız kapatmayı deneyin\n" +
                 "• Windows Defender veya firewall ayarlarını kontrol edin");
         }
@@ -68,17 +77,7 @@ namespace SplitWireTurkey.Services
                 UseDefaultCredentials = false,
                 ServerCertificateCustomValidationCallback = (_, _, _, sslPolicyErrors) =>
                 {
-                    if (sslPolicyErrors == System.Net.Security.SslPolicyErrors.None)
-                        return true;
-
-                    if (sslPolicyErrors == System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch ||
-                        sslPolicyErrors == System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors)
-                    {
-                        Debug.WriteLine($"SSL sertifika uyarısı kabul edildi: {sslPolicyErrors}");
-                        return true;
-                    }
-
-                    return false;
+                    return CertificatePolicyService.IsServerCertificateValid(sslPolicyErrors);
                 }
             };
 

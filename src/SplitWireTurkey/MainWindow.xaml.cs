@@ -12,6 +12,7 @@ using System.Windows.Documents;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using SplitWireTurkey.Services;
+using SplitWireTurkey.Services.Security;
 using System.Runtime.InteropServices;
 using MaterialDesignThemes.Wpf;
 using System.Windows.Media;
@@ -15631,7 +15632,10 @@ $Shortcut.Save()
                 catch (Exception ex)
                 {
                     lastException = ex;
-                    Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başarısız: {ex.Message}");
+                    var certificateErrorHint = CertificatePolicyService.IsCertificateValidationFailure(ex)
+                        ? " (sertifika doğrulama hatası)"
+                        : string.Empty;
+                    Debug.WriteLine($"{fileName} indirme denemesi {attempt}/{maxRetries} başarısız: {ex.Message}{certificateErrorHint}");
                     
                     if (attempt < maxRetries)
                     {
@@ -15644,10 +15648,15 @@ $Shortcut.Save()
             }
             
             // Tüm denemeler başarısız oldu
+            var certificateFailureReason = lastException != null && CertificatePolicyService.IsCertificateValidationFailure(lastException)
+                ? " (sertifika doğrulama hatası)"
+                : string.Empty;
+
             var errorMessage = $"{fileName} dosyası {maxRetries} kez denendikten sonra indirilemedi.\n\n" +
-                             $"Son hata: {lastException?.Message}\n\n" +
+                             $"Son hata: {lastException?.Message}{certificateFailureReason}\n\n" +
                              $"Çözüm önerileri:\n" +
                              $"• İnternet bağlantınızı kontrol edin\n" +
+                             $"• Sunucu sertifika doğrulama hatası varsa sistem tarih/saat ve kök sertifikaları kontrol edin\n" +
                              $"• Güvenlik yazılımınızın indirme işlemini engellemediğinden emin olun\n" +
                              $"• Proxy veya VPN kullanıyorsanız kapatmayı deneyin\n" +
                              $"• Windows Defender veya firewall ayarlarını kontrol edin";
@@ -15768,7 +15777,7 @@ $Shortcut.Save()
             // Sertifika doğrulama ayarları
             handler.ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) =>
             {
-                return sslPolicyErrors == System.Net.Security.SslPolicyErrors.None;
+                return CertificatePolicyService.IsServerCertificateValid(sslPolicyErrors);
             };
             
             // Proxy ayarları
