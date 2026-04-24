@@ -538,23 +538,13 @@ namespace SplitWireTurkey.Services
 
         private static bool ValidateFileHash(string filePath, string version, DownloadIntegrityPolicy policy, out string errorMessage)
         {
-            errorMessage = null;
-            if (string.IsNullOrWhiteSpace(version))
+            if (!DownloadSecurityManifest.TryGetExpectedHash(
+                    policy,
+                    version,
+                    out var expectedHash,
+                    out errorMessage,
+                    logSignal: message => Debug.WriteLine($"TELEMETRY_MANIFEST {message}")))
             {
-                errorMessage = $"{policy.ArtifactKey} için sürüm bilgisi alınamadı; indirme güvenlik doğrulaması durduruldu.";
-                return false;
-            }
-
-            var normalizedVersion = DownloadSecurityManifest.NormalizeVersionToken(version);
-            if (string.IsNullOrWhiteSpace(normalizedVersion))
-            {
-                errorMessage = $"{policy.ArtifactKey} için sürüm formatı geçersiz: {version}";
-                return false;
-            }
-
-            if (!policy.Sha256ByVersion.TryGetValue(normalizedVersion, out var expectedHash))
-            {
-                errorMessage = $"{policy.ArtifactKey} {normalizedVersion} sürümü için manifestte SHA-256 değeri bulunamadı. Kurulum engellendi.";
                 return false;
             }
 
