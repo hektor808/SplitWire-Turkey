@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 
 namespace SplitWireTurkey.Services
 {
@@ -29,6 +30,8 @@ namespace SplitWireTurkey.Services
     /// </summary>
     public static class DownloadSecurityManifest
     {
+        private static readonly Regex StrictVersionRegex = new(@"^[0-9]+\.[0-9]+\.[0-9]+$", RegexOptions.Compiled);
+
         private static readonly Dictionary<string, DownloadIntegrityPolicy> Policies =
             new(StringComparer.OrdinalIgnoreCase)
             {
@@ -38,7 +41,9 @@ namespace SplitWireTurkey.Services
                     allowedPublisherSubjects: Array.Empty<string>(),
                     sha256ByVersion: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
-                        // Örnek: ["2.2.26"] = "....64-hex-sha256...."
+                        // Kaynak: https://github.com/ViRb3/wgcf/releases (v2.2.30)
+                        // Not: anahtarlar her zaman NormalizeVersionToken sonrası 3 parçalı semver olmalıdır.
+                        // Örnek: ["2.2.30"] = "<wgcf_2.2.30_windows_amd64.exe_sha256>"
                     }),
                 ["discord_stable"] = new DownloadIntegrityPolicy(
                     artifactKey: "discord_stable",
@@ -63,6 +68,17 @@ namespace SplitWireTurkey.Services
                         // Örnek: ["1.0.1100"] = "....64-hex-sha256...."
                     })
             };
+
+        public static string NormalizeVersionToken(string version)
+        {
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                return string.Empty;
+            }
+
+            var normalized = version.Trim().TrimStart('v', 'V');
+            return StrictVersionRegex.IsMatch(normalized) ? normalized : string.Empty;
+        }
 
         public static bool TryGetPolicy(string artifactKey, out DownloadIntegrityPolicy policy)
         {
