@@ -24,6 +24,29 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
+      - name: Prepare prerequisites
+        shell: pwsh
+        working-directory: src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dotnetPrereqDir = 'Prerequisites/.NET 8.0'
+          New-Item -ItemType Directory -Force -Path $dotnetPrereqDir | Out-Null
+
+          $x64Path = "$dotnetPrereqDir/windowsdesktop-runtime-8.0.22-win-x64.exe"
+          $x86Path = "$dotnetPrereqDir/windowsdesktop-runtime-8.0.22-win-x86.exe"
+
+          if (!(Test-Path $x64Path)) {
+            Invoke-WebRequest `
+              -Uri "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/8.0.22/windowsdesktop-runtime-8.0.22-win-x64.exe" `
+              -OutFile $x64Path
+          }
+
+          if (!(Test-Path $x86Path)) {
+            Invoke-WebRequest `
+              -Uri "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/8.0.22/windowsdesktop-runtime-8.0.22-win-x86.exe" `
+              -OutFile $x86Path
+          }
+
       - name: Build and prepare package input
         shell: cmd
         working-directory: src
