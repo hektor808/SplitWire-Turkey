@@ -154,7 +154,7 @@ namespace SplitWireTurkey
             {
                 WriteUpdateLog($"GitHub'dan sürüm alınırken hata: {ex.Message}");
                 Debug.WriteLine($"GitHub'dan sürüm alınırken hata: {ex.Message}");
-                return "1.0.0";
+                throw new Exception("Güncelleme sunucusuna şu anda ulaşılamıyor. Lütfen internet bağlantınızı kontrol edip birkaç dakika sonra tekrar deneyin.", ex);
             }
         }
 
@@ -264,6 +264,12 @@ namespace SplitWireTurkey
             {
                 WriteUpdateLog($"Güncelleme kontrolü sırasında hata: {ex.Message}");
                 Debug.WriteLine($"Güncelleme kontrolü sırasında hata: {ex.Message}");
+                Dispatcher.Invoke(() =>
+                    System.Windows.MessageBox.Show(
+                        "Güncelleme kontrolü tamamlanamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.",
+                        LanguageManager.GetText("messages", "update_title"),
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning));
             }
         }
 
@@ -15420,11 +15426,9 @@ $Shortcut.Save()
             // Tüm denemeler başarısız oldu
             var errorMessage = $"{fileName} dosyası {maxRetries} kez denendikten sonra indirilemedi.\n\n" +
                              $"Son hata: {lastException?.Message}\n\n" +
-                             $"Hata detayı: {lastException?.ToString()}\n\n" +
-                             $"İndirme URL'i: {downloadUrl}\n\n" +
                              $"Çözüm önerileri:\n" +
                              $"• İnternet bağlantınızı kontrol edin\n" +
-                             $"• Güvenlik yazılımınızın Discord'u engellemediğinden emin olun\n" +
+                             $"• Güvenlik yazılımınızın indirme işlemini engellemediğinden emin olun\n" +
                              $"• Proxy veya VPN kullanıyorsanız kapatmayı deneyin\n" +
                              $"• Windows Defender veya firewall ayarlarını kontrol edin";
             
@@ -15444,19 +15448,7 @@ $Shortcut.Save()
             // Sertifika doğrulama ayarları
             handler.ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) =>
             {
-                // Geliştirme ortamında sertifika hatalarını kabul et
-                if (sslPolicyErrors == System.Net.Security.SslPolicyErrors.None)
-                    return true;
-                
-                // Sadece belirli hataları kabul et
-                if (sslPolicyErrors == System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch ||
-                    sslPolicyErrors == System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors)
-                {
-                    Debug.WriteLine($"SSL sertifika uyarısı kabul edildi: {sslPolicyErrors}");
-                    return true;
-                }
-                
-                return false;
+                return sslPolicyErrors == System.Net.Security.SslPolicyErrors.None;
             };
             
             // Proxy ayarları
