@@ -1,23 +1,32 @@
 using System;
 using System.Diagnostics;
-using System.IO;
 using SplitWireTurkey.Services.InstallContracts;
+using SplitWireTurkey.Services.Runtime;
 
 namespace SplitWireTurkey.Services.Install
 {
     public class SystemConfigService
     {
+        private readonly IFileSystem _fileSystem;
+        private readonly IProcessRunner _processRunner;
+
+        public SystemConfigService(IFileSystem? fileSystem = null, IProcessRunner? processRunner = null)
+        {
+            _fileSystem = fileSystem ?? new FileSystem();
+            _processRunner = processRunner ?? new ProcessRunner();
+        }
+
         public string GetAppDataLogsDirectory()
         {
-            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            var logsDirectory = Path.Combine(appDataPath, "SplitWire-Turkey", "Logs");
-            Directory.CreateDirectory(logsDirectory);
+            var appDataPath = _fileSystem.GetLocalApplicationDataPath();
+            var logsDirectory = _fileSystem.Combine(appDataPath, "SplitWire-Turkey", "Logs");
+            _fileSystem.CreateDirectory(logsDirectory);
             return logsDirectory;
         }
 
         public string BuildLogPath(string fileName)
         {
-            return Path.Combine(GetAppDataLogsDirectory(), fileName);
+            return _fileSystem.Combine(GetAppDataLogsDirectory(), fileName);
         }
 
         public OperationResult Execute(CommandRequest request)
@@ -34,23 +43,26 @@ namespace SplitWireTurkey.Services.Install
                     RedirectStandardError = true
                 };
 
-                using var process = Process.Start(startInfo);
-                if (process == null)
+                var result = _processRunner.Execute(startInfo);
+                if (!result.Started)
                 {
                     return OperationResult.Fail($"Process başlatılamadı: {request.FileName}");
                 }
 
-                var output = process.StandardOutput.ReadToEnd();
-                var error = process.StandardError.ReadToEnd();
-                process.WaitForExit();
-
-                if (process.ExitCode == 0)
+                if (result.ExitCode == 0)
                 {
-                    return OperationResult.Ok(string.IsNullOrWhiteSpace(output) ? "Komut başarılı" : output.Trim());
+                    return OperationResult.Ok(string.IsNullOrWhiteSpace(result.StandardOutput)
+                        ? "Komut başarılı"
+                        : result.StandardOutput.Trim());
                 }
 
-                var message = string.IsNullOrWhiteSpace(error) ? output : error;
-                return OperationResult.Fail(string.IsNullOrWhiteSpace(message) ? $"ExitCode: {process.ExitCode}" : message.Trim());
+                var message = string.IsNullOrWhiteSpace(result.StandardError)
+                    ? result.StandardOutput
+                    : result.StandardError;
+
+                return OperationResult.Fail(string.IsNullOrWhiteSpace(message)
+                    ? $"ExitCode: {result.ExitCode}"
+                    : message.Trim());
             }
             catch (Exception ex)
             {
@@ -61,7 +73,7 @@ namespace SplitWireTurkey.Services.Install
         public void AppendLog(string path, string message)
         {
             var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}";
-            File.AppendAllText(path, line);
+            _fileSystem.AppendAllText(path, line);
         }
     }
 }

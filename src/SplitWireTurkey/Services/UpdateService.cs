@@ -83,9 +83,7 @@ namespace SplitWireTurkey.Services
             try
             {
                 _writeLog($"Versiyon karşılaştırması: Mevcut={currentVersion}, En son={latestVersion}");
-                var current = Version.Parse(currentVersion);
-                var latest = Version.Parse(latestVersion);
-                var isNewer = latest > current;
+                var isNewer = VersionComparisonService.IsNewerVersion(currentVersion, latestVersion);
                 _writeLog($"Versiyon karşılaştırma sonucu: {(isNewer ? "Yeni sürüm mevcut" : "Güncel sürüm")}");
                 return isNewer;
             }

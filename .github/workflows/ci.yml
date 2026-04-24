@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - work
+      - main
+  pull_request:
+
+jobs:
+  build:
+    name: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore application
+        run: dotnet restore src/SplitWireTurkey/SplitWireTurkey.csproj
+
+      - name: Build application
+        run: dotnet build src/SplitWireTurkey/SplitWireTurkey.csproj --configuration Release --no-restore
+
+      - name: Publish artifact
+        run: dotnet publish src/SplitWireTurkey/SplitWireTurkey.csproj --configuration Release --output artifacts/app
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: splitwire-app
+          path: artifacts/app
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore tests
+        run: dotnet restore tests/SplitWireTurkey.Tests/SplitWireTurkey.Tests.csproj
+
+      - name: Run unit tests
+        run: dotnet test tests/SplitWireTurkey.Tests/SplitWireTurkey.Tests.csproj --configuration Release --no-restore --logger "trx;LogFileName=test_results.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: tests/SplitWireTurkey.Tests/TestResults
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Verify formatting (optional)
+        run: dotnet format tests/SplitWireTurkey.Tests/SplitWireTurkey.Tests.csproj --verify-no-changes
+
+  required-tests:
+    name: required-tests
+    runs-on: ubuntu-latest
+    needs:
+      - test
+    if: always()
+    steps:
+      - name: Enforce minimum passing test gate
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "Test job must pass before merge."
+            exit 1
+          fi
