@@ -95,8 +95,37 @@ if exist "%PROJECT_DIR%\Resources" (
     xcopy "%PROJECT_DIR%\Resources\*" "%PACKAGE_INPUT_DIR%\res\" /E /I /Y >nul
 )
 
+REM Copy installer prerequisites
 if exist "Prerequisites" (
     xcopy "Prerequisites\*" "%PACKAGE_INPUT_DIR%\Prerequisites\" /E /I /Y >nul
+) else (
+    if exist "..\Prerequisites" (
+        xcopy "..\Prerequisites\*" "%PACKAGE_INPUT_DIR%\Prerequisites\" /E /I /Y >nul
+    ) else (
+        echo Error: Prerequisites folder not found.
+        exit /b 1
+    )
+)
+
+REM Validate required installer prerequisite files
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\VC_redist.x64.exe" (
+    echo Error: Missing prerequisite: VC_redist.x64.exe
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\Windows.Packet.Filter.3.6.1.1.x64.msi" (
+    echo Error: Missing prerequisite: Windows.Packet.Filter.3.6.1.1.x64.msi
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\.NET 8.0\windowsdesktop-runtime-8.0.22-win-x64.exe" (
+    echo Error: Missing prerequisite: windowsdesktop-runtime-8.0.22-win-x64.exe
+    exit /b 1
+)
+
+if not exist "%PACKAGE_INPUT_DIR%\Prerequisites\.NET 8.0\windowsdesktop-runtime-8.0.22-win-x86.exe" (
+    echo Error: Missing prerequisite: windowsdesktop-runtime-8.0.22-win-x86.exe
+    exit /b 1
 )
 
 if not exist "%PACKAGE_INPUT_DIR%\res\splitwire.ico" (
