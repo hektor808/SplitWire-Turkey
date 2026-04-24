@@ -119,6 +119,35 @@ namespace SplitWireTurkey
         /// </summary>
         private async Task<string> GetLatestVersionFromGitHubAsync()
         {
+            try
+            {
+                WriteUpdateLog("GitHub'dan en son sürüm bilgisi alınıyor...");
+                
+                using var httpClient = new HttpClient();
+                httpClient.DefaultRequestHeaders.Add("User-Agent", "SplitWire-Turkey");
+                
+                var response = await httpClient.GetStringAsync("https://api.github.com/repos/cagritaskn/SplitWire-Turkey/releases/latest");
+                WriteUpdateLog($"GitHub API Response alındı: {response.Length} karakter");
+                
+                var releaseInfo = JsonSerializer.Deserialize<GitHubRelease>(response);
+                
+                if (releaseInfo == null)
+                {
+                    WriteUpdateLog("GitHub API response'u null olarak deserialize edildi");
+                    return "1.0.0";
+                }
+                
+                var latestVersion = releaseInfo?.TagName?.TrimStart('v') ?? "1.0.0";
+                WriteUpdateLog($"GitHub'dan alınan en son sürüm: {latestVersion}");
+                
+                return latestVersion;
+            }
+            catch (Exception ex)
+            {
+                WriteUpdateLog($"GitHub'dan sürüm alınırken hata: {ex.Message}");
+                Debug.WriteLine($"GitHub'dan sürüm alınırken hata: {ex.Message}");
+                throw new Exception("Güncelleme sunucusuna şu anda ulaşılamıyor. Lütfen internet bağlantınızı kontrol edip birkaç dakika sonra tekrar deneyin.", ex);
+            }
             return await _updateService.GetLatestVersionFromGitHubAsync();
         }
 
@@ -211,6 +240,12 @@ namespace SplitWireTurkey
             {
                 WriteUpdateLog($"Güncelleme kontrolü sırasında hata: {ex.Message}");
                 Debug.WriteLine($"Güncelleme kontrolü sırasında hata: {ex.Message}");
+                Dispatcher.Invoke(() =>
+                    System.Windows.MessageBox.Show(
+                        "Güncelleme kontrolü tamamlanamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.",
+                        LanguageManager.GetText("messages", "update_title"),
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning));
             }
         }
 
@@ -15612,11 +15647,9 @@ $Shortcut.Save()
             // Tüm denemeler başarısız oldu
             var errorMessage = $"{fileName} dosyası {maxRetries} kez denendikten sonra indirilemedi.\n\n" +
                              $"Son hata: {lastException?.Message}\n\n" +
-                             $"Hata detayı: {lastException?.ToString()}\n\n" +
-                             $"İndirme URL'i: {downloadUrl}\n\n" +
                              $"Çözüm önerileri:\n" +
                              $"• İnternet bağlantınızı kontrol edin\n" +
-                             $"• Güvenlik yazılımınızın Discord'u engellemediğinden emin olun\n" +
+                             $"• Güvenlik yazılımınızın indirme işlemini engellemediğinden emin olun\n" +
                              $"• Proxy veya VPN kullanıyorsanız kapatmayı deneyin\n" +
                              $"• Windows Defender veya firewall ayarlarını kontrol edin";
             
@@ -15719,6 +15752,37 @@ $Shortcut.Save()
         /// </summary>
         private System.Net.Http.HttpClient CreateHttpClientWithAdvancedSettings()
         {
+            var handler = new System.Net.Http.HttpClientHandler();
+            
+            // SSL/TLS ayarları
+            handler.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
+            
+            // Sertifika doğrulama ayarları
+            handler.ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) =>
+            {
+                return sslPolicyErrors == System.Net.Security.SslPolicyErrors.None;
+            };
+            
+            // Proxy ayarları
+            handler.UseProxy = false; // Proxy kullanma
+            handler.Proxy = null;
+            
+            // Bağlantı ayarları
+            handler.MaxConnectionsPerServer = 1;
+            handler.MaxAutomaticRedirections = 3;
+            
+            // Keep-alive ayarları
+            handler.UseDefaultCredentials = false;
+            
+            var httpClient = new System.Net.Http.HttpClient(handler);
+            
+            // User-Agent ekle
+            httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            
+            // Accept header ekle
+            httpClient.DefaultRequestHeaders.Add("Accept", "application/octet-stream, application/exe, */*");
+            
+            return httpClient;
             return _downloadService.CreateHttpClientWithAdvancedSettings();
         }
 
