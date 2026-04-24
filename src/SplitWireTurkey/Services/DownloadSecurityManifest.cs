@@ -31,6 +31,7 @@ namespace SplitWireTurkey.Services
     public static class DownloadSecurityManifest
     {
         private static readonly Regex StrictVersionRegex = new(@"^[0-9]+\.[0-9]+\.[0-9]+$", RegexOptions.Compiled);
+        private static readonly Regex Sha256Regex = new(@"^[0-9a-fA-F]{64}$", RegexOptions.Compiled);
 
         private static readonly Dictionary<string, DownloadIntegrityPolicy> Policies =
             new(StringComparer.OrdinalIgnoreCase)
@@ -41,9 +42,7 @@ namespace SplitWireTurkey.Services
                     allowedPublisherSubjects: Array.Empty<string>(),
                     sha256ByVersion: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
-                        // Kaynak: https://github.com/ViRb3/wgcf/releases (v2.2.30)
-                        // Not: anahtarlar her zaman NormalizeVersionToken sonrası 3 parçalı semver olmalıdır.
-                        // Örnek: ["2.2.30"] = "<wgcf_2.2.30_windows_amd64.exe_sha256>"
+                        ["2.2.30"] = "A4439DC6CF18CE482CA0D6E264427D6D2CA17237666DCFD64E15FA48E1147DE2"
                     }),
                 ["discord_stable"] = new DownloadIntegrityPolicy(
                     artifactKey: "discord_stable",
@@ -54,7 +53,7 @@ namespace SplitWireTurkey.Services
                     },
                     sha256ByVersion: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
-                        // Örnek: ["1.0.9199"] = "....64-hex-sha256...."
+                        ["1.0.9234"] = "3F0306CACEAA9594C608B39DBEE8CEABA4422ABC51052EE21DEDA7280EEE9173"
                     }),
                 ["discord_ptb"] = new DownloadIntegrityPolicy(
                     artifactKey: "discord_ptb",
@@ -65,9 +64,14 @@ namespace SplitWireTurkey.Services
                     },
                     sha256ByVersion: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
-                        // Örnek: ["1.0.1100"] = "....64-hex-sha256...."
+                        ["1.0.1090"] = "44D65372609F2645FE6B52677A81621382A45E5DC014F85BE5400AF42932919A"
                     })
             };
+
+        static DownloadSecurityManifest()
+        {
+            ValidateManifestNormalization();
+        }
 
         public static string NormalizeVersionToken(string version)
         {
@@ -83,6 +87,28 @@ namespace SplitWireTurkey.Services
         public static bool TryGetPolicy(string artifactKey, out DownloadIntegrityPolicy policy)
         {
             return Policies.TryGetValue(artifactKey, out policy);
+        }
+
+        private static void ValidateManifestNormalization()
+        {
+            foreach (var (artifactKey, policy) in Policies)
+            {
+                foreach (var (versionKey, sha256) in policy.Sha256ByVersion)
+                {
+                    var normalized = NormalizeVersionToken(versionKey);
+                    if (!string.Equals(normalized, versionKey, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            $"{artifactKey} manifest sürüm anahtarı NormalizeVersionToken ile birebir eşleşmiyor: {versionKey}");
+                    }
+
+                    if (!Sha256Regex.IsMatch(sha256))
+                    {
+                        throw new InvalidOperationException(
+                            $"{artifactKey} {versionKey} için SHA-256 değeri geçersiz: {sha256}");
+                    }
+                }
+            }
         }
     }
 }
