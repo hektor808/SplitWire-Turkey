@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -79,6 +80,15 @@ namespace SplitWireTurkey.Services.Install
                         $"{artifactKey} {version} SHA-256 uyuşmuyor. Beklenen: {expectedHash}, Gelen: {actualHash}");
                 }
 
+                if (policy.RequireAuthenticodeSignature)
+                {
+                    var signatureValidation = ValidateAuthenticodeSignature(installerPath, policy);
+                    if (!signatureValidation.Success)
+                    {
+                        return signatureValidation;
+                    }
+                }
+
                 return _systemConfigService.Execute(new CommandRequest(installerPath, string.Empty));
             }
             catch (Exception ex)
@@ -130,6 +140,98 @@ namespace SplitWireTurkey.Services.Install
             using var sha256 = SHA256.Create();
             using var stream = File.OpenRead(filePath);
             return Convert.ToHexString(sha256.ComputeHash(stream));
+        }
+
+        internal static OperationResult ValidateAuthenticodeSignature(
+            string installerPath,
+            DownloadIntegrityPolicy policy,
+            Func<string, X509Certificate2?> signerResolver = null,
+            Func<X509Certificate2, bool> chainValidator = null)
+        {
+            signerResolver ??= DefaultSignerResolver;
+            chainValidator ??= DefaultChainValidator;
+
+            X509Certificate2? signerCertificate;
+            try
+            {
+                signerCertificate = signerResolver(installerPath);
+            }
+            catch (CryptographicException ex)
+            {
+                Debug.WriteLine($"Authenticode imza okunamadı: {ex.Message}");
+                return OperationResult.Fail("Kurulum dosyasında kod imzası bulunamadı.");
+            }
+
+            if (signerCertificate is null)
+            {
+                Debug.WriteLine("Authenticode doğrulaması başarısız: imza yok.");
+                return OperationResult.Fail("Kurulum dosyasında kod imzası bulunamadı.");
+            }
+
+            using (signerCertificate)
+            {
+                if (!chainValidator(signerCertificate))
+                {
+                    Debug.WriteLine($"Authenticode doğrulaması başarısız: zincir geçersiz. Subject={signerCertificate.Subject}");
+                    return OperationResult.Fail("Kurulum dosyasının kod imza zinciri doğrulanamadı.");
+                }
+
+                if (!IsAllowedPublisherSubject(signerCertificate.Subject, policy.AllowedPublisherSubjects))
+                {
+                    Debug.WriteLine(
+                        $"Authenticode doğrulaması başarısız: publisher uyuşmazlığı. Subject={signerCertificate.Subject}");
+                    return OperationResult.Fail("Kurulum dosyasının kod imza yayıncısı güvenlik politikası ile eşleşmiyor.");
+                }
+            }
+
+            return OperationResult.Ok("Authenticode imza doğrulaması başarılı.");
+        }
+
+        private static X509Certificate2? DefaultSignerResolver(string installerPath)
+        {
+            var certificate = X509Certificate.CreateFromSignedFile(installerPath);
+            return certificate is null ? null : new X509Certificate2(certificate);
+        }
+
+        private static bool DefaultChainValidator(X509Certificate2 signerCertificate)
+        {
+            using var chain = new X509Chain();
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            chain.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
+            return chain.Build(signerCertificate);
+        }
+
+        private static bool IsAllowedPublisherSubject(string signerSubject, System.Collections.Generic.IReadOnlyCollection<string> allowedSubjects)
+        {
+            if (string.IsNullOrWhiteSpace(signerSubject) || allowedSubjects is null || allowedSubjects.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (var allowed in allowedSubjects)
+            {
+                if (string.Equals(signerSubject, allowed, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                if (string.Equals(NormalizeSubject(signerSubject), NormalizeSubject(allowed), StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string NormalizeSubject(string subject)
+        {
+            if (string.IsNullOrWhiteSpace(subject))
+            {
+                return string.Empty;
+            }
+
+            return Regex.Replace(subject, @"\s+", string.Empty).ToUpperInvariant();
         }
     }
 }
