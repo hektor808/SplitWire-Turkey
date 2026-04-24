@@ -148,7 +148,6 @@ namespace SplitWireTurkey
                 Debug.WriteLine($"GitHub'dan sürüm alınırken hata: {ex.Message}");
                 throw new Exception("Güncelleme sunucusuna şu anda ulaşılamıyor. Lütfen internet bağlantınızı kontrol edip birkaç dakika sonra tekrar deneyin.", ex);
             }
-            return await _updateService.GetLatestVersionFromGitHubAsync();
         }
 
         /// <summary>
@@ -15783,7 +15782,6 @@ $Shortcut.Save()
             httpClient.DefaultRequestHeaders.Add("Accept", "application/octet-stream, application/exe, */*");
             
             return httpClient;
-            return _downloadService.CreateHttpClientWithAdvancedSettings();
         }
 
         #endregion
