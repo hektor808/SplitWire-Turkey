@@ -24,6 +24,10 @@
     <Compile Include="../../src/SplitWireTurkey/Services/DpiBypassProfileService.cs" Link="Source/DpiBypassProfileService.cs" />
     <Compile Include="../../src/SplitWireTurkey/Services/DownloadSecurityManifest.cs" Link="Source/DownloadSecurityManifest.cs" />
     <Compile Include="../../src/SplitWireTurkey/Services/VersionComparisonService.cs" Link="Source/VersionComparisonService.cs" />
+    <Compile Include="../../src/SplitWireTurkey/Services/Install/DiscordRepairService.cs" Link="Source/DiscordRepairService.cs" />
+    <Compile Include="../../src/SplitWireTurkey/Services/InstallContracts/CommandRequest.cs" Link="Source/CommandRequest.cs" />
+    <Compile Include="../../src/SplitWireTurkey/Services/InstallContracts/DiscordInstallRequest.cs" Link="Source/DiscordInstallRequest.cs" />
+    <Compile Include="../../src/SplitWireTurkey/Services/InstallContracts/OperationResult.cs" Link="Source/OperationResult.cs" />
     <Compile Include="../../src/SplitWireTurkey/Services/Runtime/IFileSystem.cs" Link="Source/IFileSystem.cs" />
   </ItemGroup>
 </Project>
